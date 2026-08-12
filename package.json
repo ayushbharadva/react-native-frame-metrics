@@ -1,31 +1,155 @@
 {
-    "name": "react-native-frame-metrics",
-    "version": "0.0.1",
-    "description": "Native frame timing for React Native — dropped frames and UI-thread FPS via a TurboModule, with independent JS-thread instrumentation. Pre-release: not yet functional.",
-    "license": "MIT",
-    "author": "Ayush Bharadva",
-    "repository": {
-        "type": "git",
-        "url": "git+https://github.com/ayushbharadva/react-native-frame-metrics.git"
+  "name": "react-native-frame-metrics",
+  "version": "0.1.0",
+  "description": "Jank diagnoser for React Native - hitch ratio, frame stage breakdown, and state attribution via a TurboModule.",
+  "main": "./lib/module/index.js",
+  "types": "./lib/typescript/src/index.d.ts",
+  "exports": {
+    ".": {
+      "react-native-frame-metrics-source": "./src/index.tsx",
+      "types": "./lib/typescript/src/index.d.ts",
+      "default": "./lib/module/index.js"
     },
-    "homepage": "https://github.com/ayushbharadva/react-native-frame-metrics#readme",
-    "bugs": {
-        "url": "https://github.com/ayushbharadva/react-native-frame-metrics/issues"
-    },
-    "keywords": [
-        "react-native",
-        "performance",
-        "fps",
-        "frame-rate",
-        "turbomodule",
-        "android",
-        "ios"
-    ],
-    "files": [
-        "README.md",
-        "LICENSE"
-    ],
-    "publishConfig": {
-        "access": "public"
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib",
+    "android",
+    "ios",
+    "cpp",
+    "*.podspec",
+    "react-native.config.js",
+    "!ios/build",
+    "!android/build",
+    "!android/gradle",
+    "!android/gradlew",
+    "!android/gradlew.bat",
+    "!android/local.properties",
+    "!**/__tests__",
+    "!**/__fixtures__",
+    "!**/__mocks__",
+    "!**/.*"
+  ],
+  "scripts": {
+    "example": "yarn workspace react-native-frame-metrics-example",
+    "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
+    "prepare": "bob build",
+    "typecheck": "tsc",
+    "lint": "eslint \"**/*.{js,ts,tsx}\"",
+    "test": "jest"
+  },
+  "keywords": [
+    "react-native",
+    "performance",
+    "jank",
+    "hitch-ratio",
+    "frame-metrics",
+    "fps",
+    "frame-rate",
+    "profiling",
+    "turbomodule",
+    "android",
+    "ios"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ayushbharadva/react-native-frame-metrics.git"
+  },
+  "author": "Ayush Bharadva <aayush.bharadva25@gmail.com> (https://github.com/ayushbharadva)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ayushbharadva/react-native-frame-metrics/issues"
+  },
+  "homepage": "https://github.com/ayushbharadva/react-native-frame-metrics#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@eslint/compat": "^2.1.0",
+    "@eslint/eslintrc": "^3.3.5",
+    "@eslint/js": "^10.0.1",
+    "@jest/globals": "^29.7.0",
+    "@react-native/babel-preset": "0.85.0",
+    "@react-native/eslint-config": "0.85.0",
+    "@react-native/jest-preset": "0.85.0",
+    "@types/react": "^19.2.0",
+    "del-cli": "^7.0.0",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-ft-flow": "^3.0.11",
+    "eslint-plugin-prettier": "^5.5.6",
+    "jest": "^29.7.0",
+    "prettier": "^3.8.3",
+    "react": "19.2.3",
+    "react-native": "0.85.0",
+    "react-native-builder-bob": "^0.41.0",
+    "turbo": "^2.9.16",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": ">=0.76"
+  },
+  "workspaces": [
+    "example"
+  ],
+  "packageManager": "yarn@4.11.0",
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": [
+      [
+        "module",
+        {
+          "esm": true
+        }
+      ],
+      [
+        "typescript",
+        {
+          "project": "tsconfig.build.json"
+        }
+      ]
+    ]
+  },
+  "codegenConfig": {
+    "name": "FrameMetricsSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.framemetrics"
     }
+  },
+  "prettier": {
+    "quoteProps": "consistent",
+    "singleQuote": true,
+    "tabWidth": 2,
+    "trailingComma": "es5",
+    "useTabs": false
+  },
+  "jest": {
+    "preset": "@react-native/jest-preset",
+    "testEnvironmentOptions": {
+      "customExportConditions": [
+        "require",
+        "react-native",
+        "react-native-frame-metrics-source"
+      ]
+    },
+    "modulePathIgnorePatterns": [
+      "<rootDir>/example/node_modules",
+      "<rootDir>/lib/"
+    ]
+  },
+  "create-react-native-library": {
+    "type": "turbo-module",
+    "languages": "kotlin-objc",
+    "tools": [
+      "eslint",
+      "jest"
+    ],
+    "version": "0.63.0"
+  }
 }
