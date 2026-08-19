@@ -6,7 +6,13 @@
  * (see `subscribe`).
  */
 export type FrameSnapshot = {
-  /** Total time `start()` has been running, in ms. Excludes stopped periods. */
+  /**
+   * Total time sampling has been running, in ms.
+   *
+   * Excludes stopped periods *and* periods auto-paused in the background. Both
+   * headline ratios divide by this, so letting it run through a gap that
+   * produced no frames would silently flatter the next window.
+   */
   elapsedMs: number;
   /** Frames delivered by Choreographer. */
   frameCount: number;
@@ -25,6 +31,18 @@ export type FrameSnapshot = {
   jsStallCount: number;
   /** Probes completed. Sanity check on sampling coverage. */
   jsProbeCount: number;
+
+  /** Frame intervals too long to be jank, bucketed out of `hitchMs`. */
+  outlierCount: number;
+  /** Total time inside those intervals. */
+  outlierMs: number;
+
+  /** Times sampling auto-paused because the app went to the background. */
+  pauseCount: number;
+  /** Whether a frame callback is posted right now. False while backgrounded. */
+  sampling: boolean;
+  /** Whether `start()` is in effect. Stays true across a background pause. */
+  started: boolean;
 
   /** Longest interval between two consecutive frames since the first `start()`. */
   worstFrameMs: number;
@@ -51,7 +69,7 @@ export type FrameSnapshot = {
  * Thresholds for both: <5 good, 5-10 warning, >10 critical.
  */
 export type FrameMetricsWindow = {
-  /** Wall time covered by this window, in ms. */
+  /** Wall time covered by this window, in ms. Excludes background pauses. */
   elapsedMs: number;
   /** Frames delivered during the window. */
   frameCount: number;
@@ -76,10 +94,39 @@ export type FrameMetricsWindow = {
    */
   jsStallRatioMs: number;
 
+  /**
+   * **Secondary. Kept for familiarity, not because it is a good metric.**
+   *
+   * Frames delivered per second during the window. It is deliberately not the
+   * headline: our frame callback re-posts on every vsync whether or not
+   * anything was drawn, so a blank screen scores a perfect 60 while
+   * `hitchRatioMs` correctly reports 0. Useful mainly for making that argument
+   * concrete — put it next to the hitch ratio and the difference is obvious.
+   */
+  fps: number;
+
   /** Probes that exceeded the budget during the window. */
   jsStallCount: number;
   /** Probes completed during the window. */
   jsProbeCount: number;
+
+  /**
+   * Frame intervals during the window too long to be jank — a frozen process,
+   * doze, or a lifecycle transition the module did not see.
+   *
+   * Non-zero here means part of the wall clock is unaccounted for, so read the
+   * ratios with that in mind. Under normal use it stays at zero: backgrounding
+   * is handled by the lifecycle pause, which resets the baseline so no gap is
+   * ever measured.
+   */
+  outlierCount: number;
+  /** Total time inside those intervals, in ms. */
+  outlierMs: number;
+
+  /** Times sampling auto-paused for the background during this window. */
+  backgroundPauses: number;
+  /** Whether sampling was active as of the end of the window. */
+  sampling: boolean;
 
   /** Refresh rate as of the end of the window. */
   refreshRateHz: number;
@@ -90,7 +137,7 @@ export type FrameMetricsWindow = {
    * Longest frame interval since the first `start()` — **not** windowed.
    *
    * The native side keeps a lifetime maximum, which cannot be recovered from a
-   * diff. Windowing this is deferred; see M3.
+   * diff. Windowing this is deferred; see M3's outcome for why.
    */
   worstFrameMsSinceStart: number;
   /** Median probe latency since the first `start()`. Not windowed — a histogram cannot be diffed. */

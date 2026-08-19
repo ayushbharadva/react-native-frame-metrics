@@ -7,6 +7,7 @@ import {
   stop,
   subscribe,
   type FrameMetricsWindow,
+  type FrameSnapshot,
 } from 'react-native-frame-metrics';
 import {
   CRITICAL_MS_PER_S,
@@ -29,6 +30,7 @@ export default function App({ autorun }: Props) {
   const [results, setResults] = useState<ScenarioResult[]>([]);
   const [busy, setBusy] = useState(false);
   const [duration, setDuration] = useState(500);
+  const [raw, setRaw] = useState<FrameSnapshot | null>(null);
 
   const driftMeter = useRef<ReturnType<typeof startDriftMeter> | null>(null);
 
@@ -52,6 +54,31 @@ export default function App({ autorun }: Props) {
       driftMeter.current?.stop();
       stop();
     };
+  }, []);
+
+  // Raw counter poller. Reads the native accumulators directly on its own
+  // timer and logs regardless of run state.
+  //
+  // This is the only honest way to check that sampling paused: a quiet
+  // `subscribe` proves the *JS timer* stopped, which says nothing about the
+  // frame callback. Compare `frames` either side of a background gap — flat
+  // means the callback really stopped, growing means it did not.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const snapshot = getSnapshot();
+      setRaw(snapshot);
+      console.log(
+        `[raw] ${new Date().toTimeString().slice(0, 8)}` +
+          ` elapsed=${snapshot.elapsedMs.toFixed(0)}ms` +
+          ` frames=${snapshot.frameCount}` +
+          ` sampling=${snapshot.sampling}` +
+          ` started=${snapshot.started}` +
+          ` pauses=${snapshot.pauseCount}` +
+          ` outliers=${snapshot.outlierCount}` +
+          `/${snapshot.outlierMs.toFixed(0)}ms`
+      );
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const push = useCallback((result: ScenarioResult) => {
@@ -109,7 +136,12 @@ export default function App({ autorun }: Props) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>2×2 acceptance test</Text>
+      <Text style={styles.title}>
+        2×2 acceptance test
+        <Text style={raw?.sampling ? styles.stateOn : styles.stateOff}>
+          {raw === null ? '' : raw.sampling ? '  ● sampling' : '  ○ paused'}
+        </Text>
+      </Text>
 
       <View style={styles.panel}>
         <Metric
@@ -150,6 +182,21 @@ export default function App({ autorun }: Props) {
           value={live?.frameBudgetMs}
           unit="ms"
           digits={2}
+        />
+        <View style={styles.divider} />
+        <Metric label="fps" value={live?.fps} unit="" note="secondary" />
+        <Metric
+          label="background pauses"
+          value={raw?.pauseCount}
+          unit=""
+          digits={0}
+        />
+        <Metric
+          label="outliers"
+          value={raw?.outlierCount}
+          unit=""
+          digits={0}
+          bad={(raw?.outlierCount ?? 0) > 0}
         />
       </View>
 
@@ -245,6 +292,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 3,
   },
+  stateOn: { color: '#7ee787', fontSize: 12, fontWeight: '600' },
+  stateOff: { color: '#d29922', fontSize: 12, fontWeight: '600' },
   metricLabel: { color: '#8a97a6', fontSize: 13 },
   metricNote: { color: '#5d6874', fontSize: 11, fontStyle: 'italic' },
   metricValue: {

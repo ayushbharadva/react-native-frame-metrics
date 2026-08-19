@@ -17,6 +17,11 @@ function snapshot(overrides: Partial<FrameSnapshot> = {}): FrameSnapshot {
     jsQueueLatencyP50Ms: 0,
     jsQueueLatencyP95Ms: 0,
     jsQueueLatencyMaxMs: 0,
+    outlierCount: 0,
+    outlierMs: 0,
+    pauseCount: 0,
+    sampling: true,
+    started: true,
     ...overrides,
   };
 }
@@ -108,5 +113,94 @@ describe('ratios', () => {
 
     expect(window.hitchRatioMs).toBeGreaterThan(10);
     expect(window.jsStallRatioMs).toBeLessThan(5);
+  });
+});
+
+describe('lifecycle', () => {
+  it('surfaces a background pause in the window it happened in', () => {
+    const window = diff(
+      snapshot({ pauseCount: 0 }),
+      snapshot({ elapsedMs: 400, pauseCount: 1, sampling: false })
+    );
+
+    expect(window.backgroundPauses).toBe(1);
+    expect(window.sampling).toBe(false);
+  });
+
+  it('does not dilute the ratios across a background gap', () => {
+    // The native clock stops with the sampler, so 30s in the background adds
+    // nothing to elapsedMs. A window spanning the pause must read the same as
+    // one that did not span it — otherwise backgrounding would silently make a
+    // janky app look healthy.
+    const spanningPause = diff(
+      snapshot({ elapsedMs: 1000, hitchMs: 20 }),
+      snapshot({ elapsedMs: 2000, hitchMs: 60, pauseCount: 1 })
+    );
+    const uninterrupted = diff(
+      snapshot({ elapsedMs: 1000, hitchMs: 20 }),
+      snapshot({ elapsedMs: 2000, hitchMs: 60 })
+    );
+
+    expect(spanningPause.hitchRatioMs).toBeCloseTo(40, 5);
+    expect(spanningPause.hitchRatioMs).toBeCloseTo(
+      uninterrupted.hitchRatioMs,
+      10
+    );
+  });
+});
+
+describe('outliers', () => {
+  it('reports them separately instead of folding them into hitch', () => {
+    // A 30s frozen gap. If it counted as jank the hitch ratio would read tens
+    // of thousands of ms/s for something the app never did.
+    const window = diff(
+      snapshot(),
+      snapshot({
+        elapsedMs: 1000,
+        hitchMs: 12,
+        outlierCount: 1,
+        outlierMs: 30_000,
+      })
+    );
+
+    expect(window.outlierCount).toBe(1);
+    expect(window.outlierMs).toBe(30_000);
+    expect(window.hitchRatioMs).toBeCloseTo(12, 5);
+  });
+
+  it('stays at zero for a genuine multi-second block', () => {
+    // 2000ms is the acceptance matrix's worst case and sits well under the
+    // native threshold, so it must arrive as hitch, not as an outlier.
+    const window = diff(
+      snapshot(),
+      snapshot({ elapsedMs: 2900, hitchMs: 1983 })
+    );
+
+    expect(window.outlierCount).toBe(0);
+    expect(window.hitchRatioMs).toBeGreaterThan(10);
+  });
+});
+
+describe('fps', () => {
+  it('is derived from the same window as the ratios', () => {
+    const window = diff(
+      snapshot(),
+      snapshot({ elapsedMs: 2000, frameCount: 120 })
+    );
+
+    expect(window.fps).toBeCloseTo(60, 5);
+  });
+
+  it('scores a perfect 60 on a screen that drew nothing, where hitch reads 0', () => {
+    // The reason fps is a secondary field: our callback re-posts every vsync
+    // whether or not anything rendered. Both numbers here are "correct" and
+    // only one of them is useful.
+    const window = diff(
+      snapshot(),
+      snapshot({ elapsedMs: 1000, frameCount: 60, hitchMs: 0 })
+    );
+
+    expect(window.fps).toBeCloseTo(60, 5);
+    expect(window.hitchRatioMs).toBe(0);
   });
 });

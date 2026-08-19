@@ -6,9 +6,11 @@ import android.hardware.display.DisplayManager
 import android.view.Choreographer
 import android.view.Display
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.UiThreadUtil
 import com.facebook.react.bridge.WritableMap
+import com.facebook.react.common.LifecycleState
 import kotlin.math.max
 import kotlin.math.roundToLong
 
@@ -25,9 +27,23 @@ import kotlin.math.roundToLong
  * snapshots to get a window. The exceptions are the lifetime values
  * (`worstFrameMs`, the latency percentiles), which cannot be recovered from a
  * diff and are documented as such.
+ *
+ * ### Two states, not one
+ *
+ * [started] is what the caller asked for. [sampling] is whether a frame
+ * callback is actually posted. They differ while the app is backgrounded: a
+ * posted frame callback forces vsync delivery and stops the display pipeline
+ * idling, so leaving it running in the background drains the battery of a
+ * device sitting in a pocket. Sampling therefore follows
+ * `started && foreground`, and [start] / [stop] only move [started].
+ *
+ * The elapsed clock pauses with sampling. That is deliberate: both headline
+ * ratios divide by elapsed seconds, so letting the clock run through a
+ * background gap that produced no frames would silently dilute them and make
+ * the next window look better than it was.
  */
 class FrameMetricsModule(reactContext: ReactApplicationContext) :
-  NativeFrameMetricsSpec(reactContext) {
+  NativeFrameMetricsSpec(reactContext), LifecycleEventListener {
 
   /**
    * Guards the accumulators below, which are written from the UI thread
@@ -43,25 +59,52 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
   private var worstFrameNanos = 0L
   private var hitchNanos = 0L
 
+  /** Intervals too long to be jank. See [OUTLIER_FRAME_INTERVAL_NANOS]. */
+  private var outlierCount = 0L
+  private var outlierNanos = 0L
+
   private var jsStallNanos = 0L
   private var jsStallCount = 0L
   private val latencyHistogram = LatencyHistogram()
 
-  /** Running time from previous start/stop cycles. */
+  /** Running time from previous sampling periods. */
   private var accumulatedNanos = 0L
 
-  /** Start of the current run, or 0 when stopped. */
+  /** Start of the current sampling period, or 0 when not sampling. */
   private var runStartedAtNanos = 0L
 
+  /** What the caller asked for. Read on the UI thread, written from JS. */
+  private var started = false
+
+  /** Number of background pauses. Diagnostic — proves the pause fired. */
+  private var pauseCount = 0L
+
   // UI thread only — never read from JS.
-  private var running = false
+  private var sampling = false
   private var lastFrameTimeNanos = 0L
   private var choreographer: Choreographer? = null
+
+  /**
+   * Whether the host activity is resumed. UI thread only: RN dispatches
+   * lifecycle callbacks there, and [syncSamplingState] is the only reader.
+   *
+   * Seeded from the context rather than assumed `true`, so a module created
+   * while the host is already paused does not sample into the background until
+   * the first callback arrives.
+   */
+  private var foreground = reactContext.lifecycleState == LifecycleState.RESUMED
 
   /**
    * Resolved once; [Display.getRefreshRate] is re-read on every frame because
    * the rate is not constant — adaptive panels downclock at runtime and a
    * cached budget would manufacture phantom drops the moment they do.
+   *
+   * Still [Display.DEFAULT_DISPLAY], which is the wrong display on a foldable's
+   * cover screen or when the app is on an external panel. Deferred to M5 rather
+   * than fixed here: doing it properly means tracking the current Activity
+   * across recreation, which is exactly the reference M5 has to hold anyway for
+   * `Window.addOnFrameMetricsAvailableListener`. Solving it twice would be
+   * wasted work.
    */
   private val display: Display? =
     (reactContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)
@@ -72,39 +115,42 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
 
   private val frameCallback = object : Choreographer.FrameCallback {
     override fun doFrame(frameTimeNanos: Long) {
-      if (!running) return
+      if (!sampling) return
       choreographer?.postFrameCallback(this)
       recordFrame(frameTimeNanos)
     }
   }
 
-  override fun start() {
-    probe.start()
-    UiThreadUtil.runOnUiThread {
-      if (running) return@runOnUiThread
-      running = true
-      // Drop the stale timestamp so the gap across a stop/start is not counted
-      // as dropped frames.
-      lastFrameTimeNanos = 0L
-      synchronized(lock) { runStartedAtNanos = System.nanoTime() }
-      choreographer = Choreographer.getInstance().also {
-        it.postFrameCallback(frameCallback)
-      }
-    }
+  init {
+    reactContext.addLifecycleEventListener(this)
   }
 
+  override fun start() {
+    synchronized(lock) { started = true }
+    UiThreadUtil.runOnUiThread(::syncSamplingState)
+  }
+
+  /** Stop sampling. Counters are retained, not reset. */
   override fun stop() {
-    probe.stop()
-    UiThreadUtil.runOnUiThread {
-      if (!running) return@runOnUiThread
-      running = false
-      choreographer?.removeFrameCallback(frameCallback)
-      lastFrameTimeNanos = 0L
-      synchronized(lock) {
-        accumulatedNanos += System.nanoTime() - runStartedAtNanos
-        runStartedAtNanos = 0L
-      }
-    }
+    synchronized(lock) { started = false }
+    UiThreadUtil.runOnUiThread(::syncSamplingState)
+  }
+
+  // --- Lifecycle. RN dispatches all three on the UI thread. ------------------
+
+  override fun onHostResume() {
+    foreground = true
+    syncSamplingState()
+  }
+
+  override fun onHostPause() {
+    foreground = false
+    syncSamplingState()
+  }
+
+  override fun onHostDestroy() {
+    foreground = false
+    syncSamplingState()
   }
 
   override fun getSnapshot(): WritableMap {
@@ -120,6 +166,12 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
       map.putDouble("droppedFrames", droppedFrames.toDouble())
       map.putDouble("hitchMs", hitchNanos / NANOS_PER_MILLI)
       map.putDouble("worstFrameMs", worstFrameNanos / NANOS_PER_MILLI)
+
+      map.putDouble("outlierCount", outlierCount.toDouble())
+      map.putDouble("outlierMs", outlierNanos / NANOS_PER_MILLI)
+      map.putDouble("pauseCount", pauseCount.toDouble())
+      map.putBoolean("sampling", runStartedAtNanos != 0L)
+      map.putBoolean("started", started)
 
       map.putDouble("jsStallMs", jsStallNanos / NANOS_PER_MILLI)
       map.putDouble("jsStallCount", jsStallCount.toDouble())
@@ -164,9 +216,48 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
   }
 
   override fun invalidate() {
+    reactApplicationContext.removeLifecycleEventListener(this)
     stop()
     super.invalidate()
   }
+
+  // --- Sampling state machine. UI thread only. -------------------------------
+
+  private fun syncSamplingState() {
+    val shouldSample = synchronized(lock) { started } && foreground
+    if (shouldSample == sampling) return
+    if (shouldSample) resumeSampling() else pauseSampling()
+  }
+
+  private fun resumeSampling() {
+    sampling = true
+    // Drop the stale timestamp so the gap across a stop or a background pause
+    // is not counted as dropped frames. The first callback after this
+    // establishes a fresh baseline.
+    lastFrameTimeNanos = 0L
+    synchronized(lock) { runStartedAtNanos = System.nanoTime() }
+    probe.start()
+    choreographer = Choreographer.getInstance().also {
+      it.postFrameCallback(frameCallback)
+    }
+  }
+
+  private fun pauseSampling() {
+    sampling = false
+    choreographer?.removeFrameCallback(frameCallback)
+    lastFrameTimeNanos = 0L
+    probe.stop()
+    synchronized(lock) {
+      if (runStartedAtNanos != 0L) {
+        accumulatedNanos += System.nanoTime() - runStartedAtNanos
+        runStartedAtNanos = 0L
+      }
+      // Only a background pause is interesting; a caller's stop() is not.
+      if (started) pauseCount++
+    }
+  }
+
+  // --- Accumulation ----------------------------------------------------------
 
   private fun recordFrame(frameTimeNanos: Long) {
     val budgetNanos = NANOS_PER_SECOND / currentRefreshRateHz()
@@ -177,6 +268,27 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
     // The first callback of a run establishes the baseline: it is a delivered
     // frame, but there is no interval behind it yet to judge.
     val deltaNanos = if (previous == 0L) 0L else frameTimeNanos - previous
+
+    // A gap this long is not the UI thread being slow, it is the UI thread not
+    // existing for a while — a frozen process, doze, or a lifecycle transition
+    // this module did not see. Counting it as jank would report thousands of
+    // ms/s of hitch for something the app never did. Bucketed rather than
+    // discarded, so the reading stays visible instead of vanishing.
+    //
+    // This is a backstop, not the mechanism. Backgrounding is handled by the
+    // lifecycle pause above, which resets the baseline so no gap is ever
+    // measured. The threshold sits well above any stall worth reporting — the
+    // acceptance matrix's worst case is 2000ms — precisely so that a genuine
+    // multi-second block is still counted as the jank it is.
+    if (deltaNanos > OUTLIER_FRAME_INTERVAL_NANOS) {
+      synchronized(lock) {
+        frameCount++
+        outlierCount++
+        outlierNanos += deltaNanos
+      }
+      return
+    }
+
     val dropped =
       if (deltaNanos == 0L) 0L
       else max(0L, (deltaNanos / budgetNanos).roundToLong() - 1L)
@@ -230,5 +342,16 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
      * stall. Roughly one frame at 60Hz.
      */
     private const val PROBE_INTERVAL_MS = 16L
+
+    /**
+     * Frame intervals longer than this are bucketed as outliers rather than
+     * counted as jank.
+     *
+     * Five seconds is Android's own ANR window for input dispatch: a foreground
+     * app that blocks its UI thread this long is killed, not measured. So a gap
+     * beyond it means the process was not running, which is a different fact
+     * from a slow frame and is reported as one.
+     */
+    private const val OUTLIER_FRAME_INTERVAL_NANOS = 5_000_000_000L
   }
 }

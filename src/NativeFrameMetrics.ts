@@ -26,6 +26,26 @@ export type NativeFrameSnapshot = {
   /** Probes completed. Sanity check on sampling coverage. */
   jsProbeCount: number;
 
+  /** Frame intervals too long to be jank — see `outlierMs`. */
+  outlierCount: number;
+  /**
+   * Total time inside those intervals.
+   *
+   * Excluded from `hitchMs` and `worstFrameMs`. A gap beyond five seconds means
+   * the process was not running rather than that a frame was slow, so counting
+   * it as jank would report thousands of ms/s for something the app never did.
+   * Bucketed rather than discarded so it stays auditable.
+   */
+  outlierMs: number;
+
+  // --- Sampling state. Not counters; the current value, not a total.
+  /** Times sampling auto-paused because the app went to the background. */
+  pauseCount: number;
+  /** Whether a frame callback is posted right now. False while backgrounded. */
+  sampling: boolean;
+  /** Whether `start()` is in effect. Stays true across a background pause. */
+  started: boolean;
+
   // --- Lifetime values. Not diffable; a histogram and a max cannot be
   // --- subtracted. Reported since the first start().
   worstFrameMs: number;
