@@ -1,7 +1,54 @@
 import { TurboModuleRegistry, type TurboModule } from 'react-native';
 
+/**
+ * Raw counters read straight off the native accumulators.
+ *
+ * The counters are monotonic and never reset natively — callers diff two
+ * snapshots to get a window. The exceptions are noted below: they are values
+ * that cannot be recovered from a diff.
+ *
+ * See src/types.ts for the diffed shape.
+ */
+export type NativeFrameSnapshot = {
+  elapsedMs: number;
+  frameCount: number;
+  droppedFrames: number;
+  refreshRateHz: number;
+  frameBudgetMs: number;
+
+  /** Sum of per-frame overrun beyond the budget. Drives `hitchRatioMs`. */
+  hitchMs: number;
+
+  /** Sum of probe latency beyond the budget. Drives `jsStallRatioMs`. */
+  jsStallMs: number;
+  /** Probes whose latency exceeded the frame budget. */
+  jsStallCount: number;
+  /** Probes completed. Sanity check on sampling coverage. */
+  jsProbeCount: number;
+
+  // --- Lifetime values. Not diffable; a histogram and a max cannot be
+  // --- subtracted. Reported since the first start().
+  worstFrameMs: number;
+  jsQueueLatencyP50Ms: number;
+  jsQueueLatencyP95Ms: number;
+  jsQueueLatencyMaxMs: number;
+};
+
 export interface Spec extends TurboModule {
-  multiply(a: number, b: number): number;
+  start(): void;
+  stop(): void;
+  getSnapshot(): NativeFrameSnapshot;
+
+  /**
+   * Sleeps the UI thread. **Testing only — must not ship.**
+   *
+   * This exists so the 2x2 acceptance fixture can block the UI thread with a
+   * controlled, deterministic stimulus. It is a no-op outside a debug build.
+   *
+   * Removal is a blocking checklist item for M11. If you are reading this in a
+   * published release, that is a bug.
+   */
+  unstable_blockUiThreadForTesting(ms: number): void;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('FrameMetrics');
