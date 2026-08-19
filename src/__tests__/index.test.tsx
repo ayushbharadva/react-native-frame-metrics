@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { diff } from '../diff';
-import type { FrameSnapshot } from '../types';
+import type { FrameSnapshot, StateBucket } from '../types';
 
 function snapshot(overrides: Partial<FrameSnapshot> = {}): FrameSnapshot {
   return {
@@ -22,6 +22,22 @@ function snapshot(overrides: Partial<FrameSnapshot> = {}): FrameSnapshot {
     pauseCount: 0,
     sampling: true,
     started: true,
+    states: [],
+    currentStateKey: '(untagged)',
+    ...overrides,
+  };
+}
+
+function bucket(
+  key: string,
+  overrides: Partial<StateBucket> = {}
+): StateBucket {
+  return {
+    key,
+    frameCount: 0,
+    droppedFrames: 0,
+    hitchMs: 0,
+    elapsedMs: 0,
     ...overrides,
   };
 }
@@ -202,5 +218,115 @@ describe('fps', () => {
 
     expect(window.fps).toBeCloseTo(60, 5);
     expect(window.hitchRatioMs).toBe(0);
+  });
+});
+
+describe('state buckets', () => {
+  it('divides each bucket by its own elapsed time, not the window', () => {
+    // One 2s window. Scrolling was active for 500ms of it and produced 100ms of
+    // hitch; idle covered the other 1500ms cleanly. Dividing both by the
+    // window's 2s would report scrolling at 50 ms/s instead of 200 — it was
+    // only bad for a quarter of the window, and that quarter is the answer.
+    const window = diff(
+      snapshot(),
+      snapshot({
+        elapsedMs: 2000,
+        states: [
+          bucket('screen=Feed,interaction=idle', {
+            frameCount: 90,
+            elapsedMs: 1500,
+          }),
+          bucket('screen=Feed,interaction=scrolling', {
+            frameCount: 30,
+            elapsedMs: 500,
+            hitchMs: 100,
+          }),
+        ],
+      })
+    );
+
+    const scrolling = window.states.find((s) => s.key.includes('scrolling'))!;
+    const idle = window.states.find((s) => s.key.includes('idle'))!;
+
+    expect(scrolling.hitchRatioMs).toBeCloseTo(200, 5);
+    expect(idle.hitchRatioMs).toBe(0);
+  });
+
+  it('puts the worst bucket first', () => {
+    const window = diff(
+      snapshot(),
+      snapshot({
+        elapsedMs: 3000,
+        states: [
+          bucket('a', { frameCount: 60, elapsedMs: 1000, hitchMs: 2 }),
+          bucket('b', { frameCount: 60, elapsedMs: 1000, hitchMs: 40 }),
+          bucket('c', { frameCount: 60, elapsedMs: 1000, hitchMs: 9 }),
+        ],
+      })
+    );
+
+    expect(window.states.map((s) => s.key)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('drops buckets that saw no frames this window', () => {
+    // A screen left five minutes ago should not keep showing up as a row of
+    // zeroes. Its counters are unchanged, so the delta is empty.
+    const previous = snapshot({
+      states: [bucket('screen=Profile', { frameCount: 300, elapsedMs: 5000 })],
+    });
+    const current = snapshot({
+      elapsedMs: 1000,
+      states: [
+        bucket('screen=Profile', { frameCount: 300, elapsedMs: 5000 }),
+        bucket('screen=Feed', { frameCount: 60, elapsedMs: 1000, hitchMs: 30 }),
+      ],
+    });
+
+    const window = diff(previous, current);
+
+    expect(window.states).toHaveLength(1);
+    expect(window.states[0]!.key).toBe('screen=Feed');
+  });
+
+  it('diffs a bucket that appeared mid-window against zero', () => {
+    const window = diff(
+      snapshot({ states: [] }),
+      snapshot({
+        elapsedMs: 1000,
+        states: [
+          bucket('screen=Checkout', {
+            frameCount: 60,
+            droppedFrames: 4,
+            elapsedMs: 1000,
+            hitchMs: 25,
+          }),
+        ],
+      })
+    );
+
+    expect(window.states[0]!.frameCount).toBe(60);
+    expect(window.states[0]!.droppedFrames).toBe(4);
+    expect(window.states[0]!.hitchRatioMs).toBeCloseTo(25, 5);
+  });
+
+  it('keeps the per-bucket ratio on the same scale as the headline', () => {
+    // A single active state must make the bucket agree with the global number,
+    // or the two cannot be read side by side.
+    const window = diff(
+      snapshot(),
+      snapshot({
+        elapsedMs: 1000,
+        hitchMs: 30,
+        states: [
+          bucket('screen=Feed', {
+            frameCount: 60,
+            elapsedMs: 1000,
+            hitchMs: 30,
+          }),
+        ],
+      })
+    );
+
+    expect(window.states[0]!.hitchRatioMs).toBeCloseTo(window.hitchRatioMs, 5);
   });
 });

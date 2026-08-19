@@ -1,6 +1,23 @@
 import { TurboModuleRegistry, type TurboModule } from 'react-native';
 
 /**
+ * One state combination's share of the frame cost.
+ *
+ * `key` is the composed label — `screen=FeedList,interaction=scrolling`, with
+ * the state keys sorted so the same set always produces the same bucket. Two
+ * reserved keys: `(untagged)` for frames that landed while nothing was labelled,
+ * and `(other)` for everything past the bucket cap.
+ */
+export type NativeStateBucket = {
+  key: string;
+  frameCount: number;
+  droppedFrames: number;
+  hitchMs: number;
+  /** Sum of frame intervals attributed here — this bucket's own denominator. */
+  elapsedMs: number;
+};
+
+/**
  * Raw counters read straight off the native accumulators.
  *
  * The counters are monotonic and never reset natively — callers diff two
@@ -46,6 +63,15 @@ export type NativeFrameSnapshot = {
   /** Whether `start()` is in effect. Stays true across a background pause. */
   started: boolean;
 
+  /** Per-state-combination buckets. Monotonic, like the global counters. */
+  states: NativeStateBucket[];
+
+  /**
+   * The label frames are being attributed to right now — a current value, not
+   * a counter. `(untagged)` when nothing is set.
+   */
+  currentStateKey: string;
+
   // --- Lifetime values. Not diffable; a histogram and a max cannot be
   // --- subtracted. Reported since the first start().
   worstFrameMs: number;
@@ -58,6 +84,11 @@ export interface Spec extends TurboModule {
   start(): void;
   stop(): void;
   getSnapshot(): NativeFrameSnapshot;
+
+  /** Label what the app is doing. Frames are attributed to every active label. */
+  setState(key: string, value: string): void;
+  /** Remove one label. */
+  clearState(key: string): void;
 
   /**
    * Sleeps the UI thread. **Testing only — must not ship.**

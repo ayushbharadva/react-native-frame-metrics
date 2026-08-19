@@ -67,6 +67,9 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
   private var jsStallCount = 0L
   private val latencyHistogram = LatencyHistogram()
 
+  /** Per-state buckets. Guarded by [lock] like everything else here. */
+  private val stateTracker = StateTracker()
+
   /** Running time from previous sampling periods. */
   private var accumulatedNanos = 0L
 
@@ -153,6 +156,27 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
     syncSamplingState()
   }
 
+  /**
+   * Label what the app is doing. Frames from now on are attributed to the
+   * combination of every active label.
+   *
+   * **Attribution is as timely as the JS thread.** This call originates in JS,
+   * so while the JS thread is stalled the state change waits in its queue and
+   * the frames in between keep the previous label. That is worst exactly when
+   * the app is janky, which is when the attribution matters most — a real
+   * limitation of pushing state down rather than timestamping frames and
+   * bucketing in JS. The trade was taken because the alternative moves per-frame
+   * data across the boundary continuously. Documented, not papered over.
+   */
+  override fun setState(key: String, value: String) {
+    synchronized(lock) { stateTracker.setState(key, value) }
+  }
+
+  /** Remove one label. Frames revert to the combination of whatever is left. */
+  override fun clearState(key: String) {
+    synchronized(lock) { stateTracker.clearState(key) }
+  }
+
   override fun getSnapshot(): WritableMap {
     val refreshRateHz = currentRefreshRateHz()
     val map = Arguments.createMap()
@@ -179,6 +203,19 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
       map.putDouble("jsQueueLatencyP50Ms", latencyHistogram.percentileMs(0.50))
       map.putDouble("jsQueueLatencyP95Ms", latencyHistogram.percentileMs(0.95))
       map.putDouble("jsQueueLatencyMaxMs", latencyHistogram.maxMs)
+
+      val states = Arguments.createArray()
+      stateTracker.forEachBucket { key, bucket ->
+        val entry = Arguments.createMap()
+        entry.putString("key", key)
+        entry.putDouble("frameCount", bucket.frameCount.toDouble())
+        entry.putDouble("droppedFrames", bucket.droppedFrames.toDouble())
+        entry.putDouble("hitchMs", bucket.hitchNanos / NANOS_PER_MILLI)
+        entry.putDouble("elapsedMs", bucket.elapsedNanos / NANOS_PER_MILLI)
+        states.pushMap(entry)
+      }
+      map.putArray("states", states)
+      map.putString("currentStateKey", stateTracker.activeKey)
     }
 
     map.putDouble("refreshRateHz", refreshRateHz)
@@ -299,6 +336,7 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
       droppedFrames += dropped
       hitchNanos += hitch.toLong()
       if (deltaNanos > worstFrameNanos) worstFrameNanos = deltaNanos
+      stateTracker.recordFrame(deltaNanos, dropped, hitch.toLong())
     }
   }
 

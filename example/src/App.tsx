@@ -18,6 +18,12 @@ import {
   type Scenario,
   type ScenarioResult,
 } from './acceptance';
+import { StateTagging } from './StateTagging';
+import {
+  formatStateResult,
+  runStateMatrix,
+  type StateResult,
+} from './stateFixture';
 
 const DURATIONS_MS = [100, 500, 2000];
 const SETTLE_MS = 900;
@@ -31,6 +37,7 @@ export default function App({ autorun }: Props) {
   const [busy, setBusy] = useState(false);
   const [duration, setDuration] = useState(500);
   const [raw, setRaw] = useState<FrameSnapshot | null>(null);
+  const [tab, setTab] = useState<'matrix' | 'states'>('matrix');
 
   const driftMeter = useRef<ReturnType<typeof startDriftMeter> | null>(null);
 
@@ -74,6 +81,7 @@ export default function App({ autorun }: Props) {
           ` sampling=${snapshot.sampling}` +
           ` started=${snapshot.started}` +
           ` pauses=${snapshot.pauseCount}` +
+          ` state=${snapshot.currentStateKey}` +
           ` outliers=${snapshot.outlierCount}` +
           `/${snapshot.outlierMs.toFixed(0)}ms`
       );
@@ -122,13 +130,31 @@ export default function App({ autorun }: Props) {
     }
   }, [busy, push]);
 
-  // Headless entry point. Waits for the probe and frame callback to produce a
-  // steady baseline before starting, so the first scenario is not measured
-  // against app-startup noise.
+  const runStates = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    // Deliberately does NOT switch to the states tab. The fixture owns the
+    // `screen` and `interaction` keys for the duration of the run and clears
+    // them at the end; if <FrameState> were mounted at the same time the two
+    // would fight over the same key and the demo would come back untagged.
+    try {
+      await runStateMatrix(
+        (result: StateResult) => console.log(formatStateResult(result)),
+        (line: string) => console.log(line)
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
+  // Headless entry points. Both wait for the probe and frame callback to reach
+  // a steady baseline first, so the opening scenario is not measured against
+  // app-startup noise.
   useEffect(() => {
-    if (autorun !== '2x2') return;
+    if (autorun !== '2x2' && autorun !== 'states') return;
     const timer = setTimeout(() => {
-      runAll();
+      if (autorun === '2x2') runAll();
+      else runStates();
     }, 3000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -143,108 +169,142 @@ export default function App({ autorun }: Props) {
         </Text>
       </Text>
 
-      <View style={styles.panel}>
-        <Metric
-          label="hitch ratio"
-          value={live?.hitchRatioMs}
-          unit="ms/s"
-          bad={(live?.hitchRatioMs ?? 0) > CRITICAL_MS_PER_S}
-        />
-        <Metric
-          label="JS stall ratio"
-          value={live?.jsStallRatioMs}
-          unit="ms/s"
-          bad={(live?.jsStallRatioMs ?? 0) > CRITICAL_MS_PER_S}
-        />
-        <Metric
-          label="setTimeout drift"
-          value={drift}
-          unit="ms/s"
-          bad={drift > CRITICAL_MS_PER_S}
-          note="contaminated"
-        />
-        <View style={styles.divider} />
-        <Metric label="probes" value={live?.jsProbeCount} unit="" digits={0} />
-        <Metric
-          label="JS latency p50"
-          value={live?.jsQueueLatencyP50MsSinceStart}
-          unit="ms"
-          digits={2}
-        />
-        <Metric
-          label="JS latency p95"
-          value={live?.jsQueueLatencyP95MsSinceStart}
-          unit="ms"
-          digits={2}
-        />
-        <Metric
-          label="frame budget"
-          value={live?.frameBudgetMs}
-          unit="ms"
-          digits={2}
-        />
-        <View style={styles.divider} />
-        <Metric label="fps" value={live?.fps} unit="" note="secondary" />
-        <Metric
-          label="background pauses"
-          value={raw?.pauseCount}
-          unit=""
-          digits={0}
-        />
-        <Metric
-          label="outliers"
-          value={raw?.outlierCount}
-          unit=""
-          digits={0}
-          bad={(raw?.outlierCount ?? 0) > 0}
-        />
-      </View>
-
       <View style={styles.row}>
-        {DURATIONS_MS.map((ms) => (
+        {(['matrix', 'states'] as const).map((name) => (
           <Pressable
-            key={ms}
-            onPress={() => setDuration(ms)}
-            style={[styles.chip, duration === ms && styles.chipOn]}
+            key={name}
+            onPress={() => setTab(name)}
+            style={[styles.chip, tab === name && styles.chipOn]}
           >
-            <Text style={styles.chipText}>{ms}ms</Text>
+            <Text style={styles.chipText}>
+              {name === 'matrix' ? '2×2 matrix' : 'State tagging'}
+            </Text>
           </Pressable>
         ))}
       </View>
 
-      <View style={styles.row}>
-        {SCENARIOS.map((scenario) => (
-          <Pressable
-            key={scenario.key}
-            onPress={() => runOne(scenario)}
-            disabled={busy}
-            style={[styles.button, busy && styles.buttonOff]}
-          >
-            <Text style={styles.buttonText}>{scenario.label}</Text>
-          </Pressable>
-        ))}
-      </View>
+      {tab === 'states' ? (
+        <StateTagging live={live} />
+      ) : (
+        <>
+          <View style={styles.panel}>
+            <Metric
+              label="hitch ratio"
+              value={live?.hitchRatioMs}
+              unit="ms/s"
+              bad={(live?.hitchRatioMs ?? 0) > CRITICAL_MS_PER_S}
+            />
+            <Metric
+              label="JS stall ratio"
+              value={live?.jsStallRatioMs}
+              unit="ms/s"
+              bad={(live?.jsStallRatioMs ?? 0) > CRITICAL_MS_PER_S}
+            />
+            <Metric
+              label="setTimeout drift"
+              value={drift}
+              unit="ms/s"
+              bad={drift > CRITICAL_MS_PER_S}
+              note="contaminated"
+            />
+            <View style={styles.divider} />
+            <Metric
+              label="probes"
+              value={live?.jsProbeCount}
+              unit=""
+              digits={0}
+            />
+            <Metric
+              label="JS latency p50"
+              value={live?.jsQueueLatencyP50MsSinceStart}
+              unit="ms"
+              digits={2}
+            />
+            <Metric
+              label="JS latency p95"
+              value={live?.jsQueueLatencyP95MsSinceStart}
+              unit="ms"
+              digits={2}
+            />
+            <Metric
+              label="frame budget"
+              value={live?.frameBudgetMs}
+              unit="ms"
+              digits={2}
+            />
+            <View style={styles.divider} />
+            <Metric label="fps" value={live?.fps} unit="" note="secondary" />
+            <Metric
+              label="background pauses"
+              value={raw?.pauseCount}
+              unit=""
+              digits={0}
+            />
+            <Metric
+              label="outliers"
+              value={raw?.outlierCount}
+              unit=""
+              digits={0}
+              bad={(raw?.outlierCount ?? 0) > 0}
+            />
+          </View>
 
-      <Pressable
-        onPress={runAll}
-        disabled={busy}
-        style={[styles.runAll, busy && styles.buttonOff]}
-      >
-        <Text style={styles.buttonText}>
-          {busy ? 'running…' : 'Run full matrix'}
-        </Text>
-      </Pressable>
+          <View style={styles.row}>
+            {DURATIONS_MS.map((ms) => (
+              <Pressable
+                key={ms}
+                onPress={() => setDuration(ms)}
+                style={[styles.chip, duration === ms && styles.chipOn]}
+              >
+                <Text style={styles.chipText}>{ms}ms</Text>
+              </Pressable>
+            ))}
+          </View>
 
-      <ScrollView style={styles.log}>
-        {results.map((result, i) => (
-          <Text
-            key={`${result.key}-${result.durationMs}-${i}`}
-            style={[styles.logLine, !result.pass && styles.logFail]}
-          >
-            {formatResult(result)}
-          </Text>
-        ))}
-      </ScrollView>
+          <View style={styles.row}>
+            {SCENARIOS.map((scenario) => (
+              <Pressable
+                key={scenario.key}
+                onPress={() => runOne(scenario)}
+                disabled={busy}
+                style={[styles.button, busy && styles.buttonOff]}
+              >
+                <Text style={styles.buttonText}>{scenario.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          <View style={styles.row}>
+            <Pressable
+              onPress={runAll}
+              disabled={busy}
+              style={[styles.runAll, styles.grow, busy && styles.buttonOff]}
+            >
+              <Text style={styles.buttonText}>
+                {busy ? 'running…' : 'Run full matrix'}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={runStates}
+              disabled={busy}
+              style={[styles.runAll, styles.grow, busy && styles.buttonOff]}
+            >
+              <Text style={styles.buttonText}>Run state matrix</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView style={styles.log}>
+            {results.map((result, i) => (
+              <Text
+                key={`${result.key}-${result.durationMs}-${i}`}
+                style={[styles.logLine, !result.pass && styles.logFail]}
+              >
+                {formatResult(result)}
+              </Text>
+            ))}
+          </ScrollView>
+        </>
+      )}
     </View>
   );
 }
@@ -326,6 +386,7 @@ const styles = StyleSheet.create({
   },
   buttonOff: { opacity: 0.4 },
   buttonText: { color: '#e6edf3', fontSize: 13, fontWeight: '600' },
+  grow: { flex: 1, marginHorizontal: 0, marginTop: 0 },
   runAll: {
     marginTop: 12,
     marginHorizontal: 16,

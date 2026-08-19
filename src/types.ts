@@ -1,4 +1,45 @@
 /**
+ * One state combination's share of the frame cost, as read from native.
+ *
+ * `key` is the composed label — `screen=FeedList,interaction=scrolling`, state
+ * keys sorted so the same set always maps to the same bucket. `(untagged)` and
+ * `(other)` are reserved: nothing was labelled, and past the bucket cap.
+ */
+export type StateBucket = {
+  key: string;
+  frameCount: number;
+  droppedFrames: number;
+  hitchMs: number;
+  /** Sum of frame intervals attributed here — this bucket's own denominator. */
+  elapsedMs: number;
+};
+
+/**
+ * What one state combination cost during a window.
+ *
+ * `hitchRatioMs` uses the bucket's own elapsed time, not the window's, so the
+ * buckets are comparable with each other and with the global headline number:
+ *
+ * ```
+ * screen=FeedList,interaction=scrolling  14.2 ms/s   <- go look here
+ * screen=FeedList,interaction=idle        0.3 ms/s
+ * screen=Profile                          0.0 ms/s
+ * ```
+ */
+export type FrameStateWindow = {
+  /** The composed state label this bucket covers. */
+  key: string;
+  /** Stutter per second of time spent in this state, in ms/s. */
+  hitchRatioMs: number;
+  /** Frames that landed while this state was active. */
+  frameCount: number;
+  /** Frames dropped while this state was active. */
+  droppedFrames: number;
+  /** Time attributed to this state during the window, in ms. */
+  elapsedMs: number;
+};
+
+/**
  * A reading of the native accumulators at one instant.
  *
  * Most fields are monotonic — they only ever grow, across the whole lifetime of
@@ -43,6 +84,15 @@ export type FrameSnapshot = {
   sampling: boolean;
   /** Whether `start()` is in effect. Stays true across a background pause. */
   started: boolean;
+
+  /** Per-state-combination buckets. Monotonic, like the global counters. */
+  states: StateBucket[];
+
+  /**
+   * The label frames are being attributed to right now — a current value, not
+   * a counter. `(untagged)` when nothing is set.
+   */
+  currentStateKey: string;
 
   /** Longest interval between two consecutive frames since the first `start()`. */
   worstFrameMs: number;
@@ -127,6 +177,19 @@ export type FrameMetricsWindow = {
   backgroundPauses: number;
   /** Whether sampling was active as of the end of the window. */
   sampling: boolean;
+
+  /**
+   * What each active state combination cost during this window.
+   *
+   * Ordered worst-first by `hitchRatioMs`, so the bucket worth looking at is
+   * the first one. Empty until something calls `setState`.
+   *
+   * **Attribution is only as timely as the JS thread.** `setState` originates
+   * in JS, so while the JS thread is stalled the change waits in its queue and
+   * intervening frames keep the previous label — worst exactly when the app is
+   * janky. Treat these as strong attribution, not exact accounting.
+   */
+  states: FrameStateWindow[];
 
   /** Refresh rate as of the end of the window. */
   refreshRateHz: number;
