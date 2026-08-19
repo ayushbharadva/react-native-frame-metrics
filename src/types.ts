@@ -1,4 +1,65 @@
 /**
+ * Where a frame's time went, split into the stages Android reports.
+ *
+ * All values in milliseconds. `total` is the whole frame, not one of the parts —
+ * the others should roughly sum to it.
+ *
+ * | Stage | Meaning |
+ * |---|---|
+ * | `unknownDelay` | Waiting for the UI thread to become responsive. Should be ~0. |
+ * | `inputHandling` | Input processing |
+ * | `animation` | Animation callbacks |
+ * | `layoutMeasure` | Layout and measure — **the React Native hot spot** |
+ * | `draw` | Building display lists |
+ * | `sync` | Sync with the render thread |
+ * | `commandIssue` | Issuing GPU draw commands |
+ * | `swapBuffers` | Handing the buffer to the compositor |
+ * | `total` | Total time taken to produce the frame |
+ */
+export type FrameStages = {
+  unknownDelay: number;
+  inputHandling: number;
+  animation: number;
+  layoutMeasure: number;
+  draw: number;
+  sync: number;
+  commandIssue: number;
+  swapBuffers: number;
+  total: number;
+};
+
+/**
+ * A frame-stage reading, averaged over a window.
+ *
+ * **Android only — `null` on iOS.** There is no public iOS equivalent of
+ * `FrameMetrics`, so rather than approximate one or return zeroes, the whole
+ * object is absent and the type says so.
+ */
+export type StageWindow = {
+  /** Frames the stage listener saw during the window. */
+  frameCount: number;
+  /** Frames the system reported dropped during the window. */
+  systemDropCount: number;
+
+  /**
+   * Mean time per stage across the window's frames.
+   *
+   * This is the steady state — where the time goes on a typical frame. Read
+   * `worstFrameMsSinceStart` for what broke.
+   */
+  averageMs: FrameStages;
+
+  /**
+   * The single worst frame's full breakdown since the first `start()` — **not**
+   * windowed.
+   *
+   * A maximum cannot be recovered from a diff. More actionable than the average:
+   * an average of 4ms layout hides one 58ms frame, and the 58ms frame is the bug.
+   */
+  worstFrameMsSinceStart: FrameStages;
+};
+
+/**
  * One state combination's share of the frame cost, as read from native.
  *
  * `key` is the composed label — `screen=FeedList,interaction=scrolling`, state
@@ -87,6 +148,14 @@ export type FrameSnapshot = {
 
   /** Per-state-combination buckets. Monotonic, like the global counters. */
   states: StateBucket[];
+
+  /** Raw Android `FrameMetrics` accumulators. `null` on iOS. */
+  stages: {
+    frameCount: number;
+    systemDropCount: number;
+    totalMs: FrameStages;
+    worstFrameMs: FrameStages;
+  } | null;
 
   /**
    * The label frames are being attributed to right now — a current value, not
@@ -190,6 +259,18 @@ export type FrameMetricsWindow = {
    * janky. Treat these as strong attribution, not exact accounting.
    */
   states: FrameStateWindow[];
+
+  /**
+   * Where the frame time actually went — **Android only, `null` on iOS.**
+   *
+   * The rest of this object tells you a frame was slow. This tells you why: a
+   * 31ms frame with 19ms in `layoutMeasure` points at the view hierarchy, and
+   * that is a diagnosis rather than a symptom.
+   *
+   * Also `null` before the first frame reaches the listener, and while stage
+   * capture is switched off.
+   */
+  stages: StageWindow | null;
 
   /** Refresh rate as of the end of the window. */
   refreshRateHz: number;

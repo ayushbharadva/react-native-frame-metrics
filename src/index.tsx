@@ -5,7 +5,9 @@ import NativeFrameMetrics from './NativeFrameMetrics';
 import type {
   FrameMetricsWindow,
   FrameSnapshot,
+  FrameStages,
   FrameStateWindow,
+  StageWindow,
   StateBucket,
 } from './types';
 import { useFrameState } from './useFrameState';
@@ -17,7 +19,9 @@ export type { SetFrameState } from './useFrameState';
 export type {
   FrameMetricsWindow,
   FrameSnapshot,
+  FrameStages,
   FrameStateWindow,
+  StageWindow,
   StateBucket,
 };
 
@@ -95,6 +99,19 @@ export function setState(key: string, value: string): void {
 /** Remove one label. Frames revert to whatever combination is left. */
 export function clearState(key: string): void {
   NativeFrameMetrics.clearState(key);
+}
+
+/**
+ * Turn the per-frame stage breakdown on or off. **Android only** — a no-op on
+ * iOS, where there is no `FrameMetrics` equivalent.
+ *
+ * On by default. The listener runs on its own background thread rather than the
+ * UI thread, so it does not add work to the thread being measured, but the
+ * switch is here so its cost can be measured against itself and dropped by
+ * anyone who finds it expensive on low-end hardware.
+ */
+export function setStageCaptureEnabled(enabled: boolean): void {
+  NativeFrameMetrics.setStageCaptureEnabled(enabled);
 }
 
 /**

@@ -1,6 +1,21 @@
 import { describe, expect, it } from '@jest/globals';
 import { diff } from '../diff';
-import type { FrameSnapshot, StateBucket } from '../types';
+import type { FrameSnapshot, FrameStages, StateBucket } from '../types';
+
+function stages(overrides: Partial<FrameStages> = {}): FrameStages {
+  return {
+    unknownDelay: 0,
+    inputHandling: 0,
+    animation: 0,
+    layoutMeasure: 0,
+    draw: 0,
+    sync: 0,
+    commandIssue: 0,
+    swapBuffers: 0,
+    total: 0,
+    ...overrides,
+  };
+}
 
 function snapshot(overrides: Partial<FrameSnapshot> = {}): FrameSnapshot {
   return {
@@ -24,6 +39,7 @@ function snapshot(overrides: Partial<FrameSnapshot> = {}): FrameSnapshot {
     started: true,
     states: [],
     currentStateKey: '(untagged)',
+    stages: null,
     ...overrides,
   };
 }
@@ -328,5 +344,91 @@ describe('state buckets', () => {
     );
 
     expect(window.states[0]!.hitchRatioMs).toBeCloseTo(window.hitchRatioMs, 5);
+  });
+});
+
+describe('stage breakdown', () => {
+  it('is null rather than zeroes when there is no measurement', () => {
+    // iOS, capture switched off, or nothing rendered yet. A caller charting the
+    // breakdown must be able to tell "no data" from "took no time".
+    const window = diff(snapshot(), snapshot({ elapsedMs: 1000 }));
+
+    expect(window.stages).toBeNull();
+  });
+
+  it('averages each stage over the stage listener own frame count', () => {
+    // 60 frames carrying 1200ms of layout: 20ms per frame. The divisor is the
+    // listener's count, not Choreographer's — they differ, and using the wrong
+    // one silently rescales every stage.
+    const window = diff(
+      snapshot({
+        stages: {
+          frameCount: 0,
+          systemDropCount: 0,
+          totalMs: stages(),
+          worstFrameMs: stages(),
+        },
+      }),
+      snapshot({
+        elapsedMs: 1000,
+        frameCount: 90,
+        stages: {
+          frameCount: 60,
+          systemDropCount: 3,
+          totalMs: stages({ layoutMeasure: 1200, draw: 240, total: 1860 }),
+          worstFrameMs: stages({ layoutMeasure: 58, total: 71 }),
+        },
+      })
+    );
+
+    expect(window.stages!.averageMs.layoutMeasure).toBeCloseTo(20, 5);
+    expect(window.stages!.averageMs.draw).toBeCloseTo(4, 5);
+    expect(window.stages!.averageMs.total).toBeCloseTo(31, 5);
+    expect(window.stages!.frameCount).toBe(60);
+    expect(window.stages!.systemDropCount).toBe(3);
+  });
+
+  it('reports the worst frame as a lifetime value, not a delta', () => {
+    // An average of 4ms layout hides one 58ms frame, and the 58ms frame is the
+    // bug. It cannot be recovered from a diff, so it passes through untouched.
+    const window = diff(
+      snapshot({
+        stages: {
+          frameCount: 100,
+          systemDropCount: 0,
+          totalMs: stages({ layoutMeasure: 400 }),
+          worstFrameMs: stages({ layoutMeasure: 58, total: 71 }),
+        },
+      }),
+      snapshot({
+        elapsedMs: 500,
+        stages: {
+          frameCount: 130,
+          systemDropCount: 0,
+          totalMs: stages({ layoutMeasure: 520 }),
+          worstFrameMs: stages({ layoutMeasure: 58, total: 71 }),
+        },
+      })
+    );
+
+    expect(window.stages!.worstFrameMsSinceStart.layoutMeasure).toBe(58);
+    expect(window.stages!.worstFrameMsSinceStart.total).toBe(71);
+    expect(window.stages!.averageMs.layoutMeasure).toBeCloseTo(4, 5);
+  });
+
+  it('does not divide by zero when no frame landed this window', () => {
+    const bucket = {
+      frameCount: 60,
+      systemDropCount: 0,
+      totalMs: stages({ layoutMeasure: 600 }),
+      worstFrameMs: stages({ total: 30 }),
+    };
+    const window = diff(
+      snapshot({ stages: bucket }),
+      snapshot({ stages: bucket })
+    );
+
+    expect(window.stages!.frameCount).toBe(0);
+    expect(window.stages!.averageMs.layoutMeasure).toBe(0);
   });
 });

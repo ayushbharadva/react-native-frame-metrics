@@ -1,8 +1,12 @@
 package com.framemetrics
 
+import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.hardware.display.DisplayManager
+import android.os.Build
+import android.os.Bundle
 import android.view.Choreographer
 import android.view.Display
 import com.facebook.react.bridge.Arguments
@@ -70,6 +74,12 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
   /** Per-state buckets. Guarded by [lock] like everything else here. */
   private val stateTracker = StateTracker()
 
+  /**
+   * Per-frame stage timings. Keeps its own lock — see [StageBreakdown]. Read
+   * outside [lock] so the two are never nested.
+   */
+  private val stages = StageBreakdown()
+
   /** Running time from previous sampling periods. */
   private var accumulatedNanos = 0L
 
@@ -98,20 +108,34 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
   private var foreground = reactContext.lifecycleState == LifecycleState.RESUMED
 
   /**
-   * Resolved once; [Display.getRefreshRate] is re-read on every frame because
-   * the rate is not constant — adaptive panels downclock at runtime and a
-   * cached budget would manufacture phantom drops the moment they do.
+   * The display the app is actually on.
    *
-   * Still [Display.DEFAULT_DISPLAY], which is the wrong display on a foldable's
-   * cover screen or when the app is on an external panel. Deferred to M5 rather
-   * than fixed here: doing it properly means tracking the current Activity
-   * across recreation, which is exactly the reference M5 has to hold anyway for
-   * `Window.addOnFrameMetricsAvailableListener`. Solving it twice would be
-   * wasted work.
+   * [Display.getRefreshRate] is re-read every frame because the rate is not
+   * constant — adaptive panels downclock at runtime and a cached budget would
+   * manufacture phantom drops the moment they do. The *[Display] object* is
+   * cached, since re-fetching it per frame would be a binder cost on the thread
+   * being measured.
+   *
+   * Now resolved from the tracked Activity rather than
+   * [Display.DEFAULT_DISPLAY], which was wrong on a foldable's cover screen or
+   * an external panel. M3 deferred this here precisely because M5 has to track
+   * the Activity anyway for `addOnFrameMetricsAvailableListener` — one
+   * reference, two uses. Falls back to the default display until an Activity
+   * appears.
    */
-  private val display: Display? =
-    (reactContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)
-      ?.getDisplay(Display.DEFAULT_DISPLAY)
+  @Volatile private var display: Display? = defaultDisplay(reactContext)
+
+  /**
+   * UI thread only: RN and the Activity callbacks both dispatch there.
+   *
+   * Seeded lazily rather than trusted to arrive. TurboModules are constructed
+   * on first use from JS, which is *after* the Activity has already resumed —
+   * so `onActivityResumed` has been and gone by the time these callbacks are
+   * registered, and waiting for the next one would mean no stage capture until
+   * the user backgrounds and returns. [activityForStages] falls back to the
+   * context's own reference to cover that first attach.
+   */
+  private var currentActivity: Activity? = null
 
   private val probe =
     JsThreadProbe(reactContext, PROBE_INTERVAL_MS, ::onProbeSample)
@@ -124,8 +148,44 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Follows the Activity so stage capture survives recreation.
+   *
+   * A rotation or theme change destroys the window the listener was attached
+   * to, and a listener on a dead window silently stops reporting. Tracking at
+   * the Application level catches every recreation without depending on
+   * `currentActivity` happening to be populated at the right moment.
+   */
+  private val activityCallbacks = object : Application.ActivityLifecycleCallbacks {
+    override fun onActivityResumed(activity: Activity) {
+      currentActivity = activity
+      display = activity.displayCompat() ?: display
+      if (sampling && stages.isEnabled()) stages.attach(activity)
+    }
+
+    override fun onActivityPaused(activity: Activity) {
+      if (currentActivity === activity) stages.detach()
+    }
+
+    override fun onActivityDestroyed(activity: Activity) {
+      if (currentActivity === activity) {
+        stages.detach()
+        currentActivity = null
+      }
+    }
+
+    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+    override fun onActivityStarted(activity: Activity) = Unit
+    override fun onActivityStopped(activity: Activity) = Unit
+    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+  }
+
+  private val application: Application? =
+    reactContext.applicationContext as? Application
+
   init {
     reactContext.addLifecycleEventListener(this)
+    application?.registerActivityLifecycleCallbacks(activityCallbacks)
   }
 
   override fun start() {
@@ -144,6 +204,11 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
   override fun onHostResume() {
     foreground = true
     syncSamplingState()
+    // Covers the case where sampling was already on and only the Activity
+    // changed underneath us.
+    if (sampling && stages.isEnabled()) {
+      activityForStages()?.let { stages.attach(it) }
+    }
   }
 
   override fun onHostPause() {
@@ -175,6 +240,30 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
   /** Remove one label. Frames revert to the combination of whatever is left. */
   override fun clearState(key: String) {
     synchronized(lock) { stateTracker.clearState(key) }
+  }
+
+  /**
+   * Turn the per-frame stage listener on or off.
+   *
+   * On by default — the breakdown is the most diagnostic thing here and the
+   * listener runs off the UI thread. The switch exists so its cost can be
+   * measured against itself (run the matrix with it on, then off) and so anyone
+   * who finds it expensive on low-end hardware can drop it without giving up
+   * the rest.
+   */
+  override fun setStageCaptureEnabled(enabled: Boolean) {
+    stages.setEnabled(enabled)
+    UiThreadUtil.runOnUiThread {
+      // Detach, rather than merely ignore the callback. The listener fires once
+      // per frame whether or not we use the result, so leaving it registered
+      // would mean "off" still carried most of the cost — and the switch exists
+      // precisely so that cost can be measured against itself.
+      if (enabled) {
+        if (sampling) activityForStages()?.let { stages.attach(it) }
+      } else {
+        stages.detach()
+      }
+    }
   }
 
   override fun getSnapshot(): WritableMap {
@@ -220,7 +309,34 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
 
     map.putDouble("refreshRateHz", refreshRateHz)
     map.putDouble("frameBudgetMs", MILLIS_PER_SECOND / refreshRateHz)
+
+    // Read outside `lock`. StageBreakdown holds its own, and nesting the two
+    // would put a background thread in the UI thread's path.
+    val reading = stages.read()
+    if (reading == null) {
+      // Null, never a row of zeroes. "No data" and "zero milliseconds" are
+      // different facts and the caller has to be able to tell them apart.
+      map.putNull("stages")
+    } else {
+      map.putMap("stages", stagesToMap(reading))
+    }
     return map
+  }
+
+  private fun stagesToMap(reading: StageBreakdown.Reading): WritableMap {
+    val out = Arguments.createMap()
+    out.putDouble("frameCount", reading.frameCount.toDouble())
+    out.putDouble("systemDropCount", reading.systemDropCount.toDouble())
+
+    val totals = Arguments.createMap()
+    val worst = Arguments.createMap()
+    StageBreakdown.STAGE_NAMES.forEachIndexed { i, name ->
+      totals.putDouble(name, reading.totals[i] / NANOS_PER_MILLI)
+      worst.putDouble(name, reading.worstStages[i] / NANOS_PER_MILLI)
+    }
+    out.putMap("totalMs", totals)
+    out.putMap("worstFrameMs", worst)
+    return out
   }
 
   /**
@@ -254,7 +370,9 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
 
   override fun invalidate() {
     reactApplicationContext.removeLifecycleEventListener(this)
+    application?.unregisterActivityLifecycleCallbacks(activityCallbacks)
     stop()
+    stages.release()
     super.invalidate()
   }
 
@@ -274,6 +392,7 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
     lastFrameTimeNanos = 0L
     synchronized(lock) { runStartedAtNanos = System.nanoTime() }
     probe.start()
+    if (stages.isEnabled()) activityForStages()?.let { stages.attach(it) }
     choreographer = Choreographer.getInstance().also {
       it.postFrameCallback(frameCallback)
     }
@@ -284,6 +403,7 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
     choreographer?.removeFrameCallback(frameCallback)
     lastFrameTimeNanos = 0L
     probe.stop()
+    stages.detach()
     synchronized(lock) {
       if (runStartedAtNanos != 0L) {
         accumulatedNanos += System.nanoTime() - runStartedAtNanos
@@ -359,6 +479,20 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
     return if (rate > 0.0) rate else FALLBACK_REFRESH_RATE_HZ
   }
 
+  private fun activityForStages(): Activity? {
+    val activity = currentActivity ?: reactApplicationContext.currentActivity
+    if (activity != null && currentActivity !== activity) {
+      currentActivity = activity
+      display = activity.displayCompat() ?: display
+    }
+    return activity
+  }
+
+  @Suppress("DEPRECATION")
+  private fun Activity.displayCompat(): Display? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display
+    else windowManager?.defaultDisplay
+
   private val isDebuggable: Boolean
     get() =
       (reactApplicationContext.applicationInfo.flags and
@@ -366,6 +500,10 @@ class FrameMetricsModule(reactContext: ReactApplicationContext) :
 
   companion object {
     const val NAME = NativeFrameMetricsSpec.NAME
+
+    private fun defaultDisplay(context: Context): Display? =
+      (context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)
+        ?.getDisplay(Display.DEFAULT_DISPLAY)
 
     private const val NANOS_PER_MILLI = 1_000_000.0
     private const val NANOS_PER_SECOND = 1_000_000_000.0

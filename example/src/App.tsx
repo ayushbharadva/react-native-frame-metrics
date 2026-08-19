@@ -24,6 +24,8 @@ import {
   runStateMatrix,
   type StateResult,
 } from './stateFixture';
+import { StageScreen, type TreeMode } from './StageScreen';
+import { runOverheadCheck, runStageMatrix } from './stageFixture';
 
 const DURATIONS_MS = [100, 500, 2000];
 const SETTLE_MS = 900;
@@ -37,7 +39,8 @@ export default function App({ autorun }: Props) {
   const [busy, setBusy] = useState(false);
   const [duration, setDuration] = useState(500);
   const [raw, setRaw] = useState<FrameSnapshot | null>(null);
-  const [tab, setTab] = useState<'matrix' | 'states'>('matrix');
+  const [tab, setTab] = useState<'matrix' | 'states' | 'stages'>('matrix');
+  const [treeMode, setTreeMode] = useState<TreeMode>('flat');
 
   const driftMeter = useRef<ReturnType<typeof startDriftMeter> | null>(null);
 
@@ -82,6 +85,7 @@ export default function App({ autorun }: Props) {
           ` started=${snapshot.started}` +
           ` pauses=${snapshot.pauseCount}` +
           ` state=${snapshot.currentStateKey}` +
+          ` stageFrames=${snapshot.stages?.frameCount ?? 'null'}` +
           ` outliers=${snapshot.outlierCount}` +
           `/${snapshot.outlierMs.toFixed(0)}ms`
       );
@@ -147,14 +151,42 @@ export default function App({ autorun }: Props) {
     }
   }, [busy]);
 
-  // Headless entry points. Both wait for the probe and frame callback to reach
+  // Unlike the other two, this one *does* need its screen mounted — stages only
+  // report what actually rendered, so there has to be a tree to render.
+  const runStages = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setTab('stages');
+    try {
+      await runStageMatrix(setTreeMode, (line: string) => console.log(line));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
+  const runOverhead = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runOverheadCheck(DURATIONS_MS, SETTLE_MS, (line: string) =>
+        console.log(line)
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
+  // Headless entry points. All wait for the probe and frame callback to reach
   // a steady baseline first, so the opening scenario is not measured against
   // app-startup noise.
   useEffect(() => {
-    if (autorun !== '2x2' && autorun !== 'states') return;
+    const modes = ['2x2', 'states', 'stages', 'overhead'];
+    if (!autorun || !modes.includes(autorun)) return;
     const timer = setTimeout(() => {
       if (autorun === '2x2') runAll();
-      else runStates();
+      else if (autorun === 'states') runStates();
+      else if (autorun === 'overhead') runOverhead();
+      else runStages();
     }, 3000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -170,14 +202,18 @@ export default function App({ autorun }: Props) {
       </Text>
 
       <View style={styles.row}>
-        {(['matrix', 'states'] as const).map((name) => (
+        {(['matrix', 'states', 'stages'] as const).map((name) => (
           <Pressable
             key={name}
             onPress={() => setTab(name)}
             style={[styles.chip, tab === name && styles.chipOn]}
           >
             <Text style={styles.chipText}>
-              {name === 'matrix' ? '2×2 matrix' : 'State tagging'}
+              {name === 'matrix'
+                ? '2×2'
+                : name === 'states'
+                  ? 'States'
+                  : 'Stages'}
             </Text>
           </Pressable>
         ))}
@@ -185,6 +221,8 @@ export default function App({ autorun }: Props) {
 
       {tab === 'states' ? (
         <StateTagging live={live} />
+      ) : tab === 'stages' ? (
+        <StageScreen mode={treeMode} live={live} />
       ) : (
         <>
           <View style={styles.panel}>

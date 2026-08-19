@@ -1,9 +1,83 @@
 import type {
   FrameMetricsWindow,
   FrameSnapshot,
+  FrameStages,
   FrameStateWindow,
+  StageWindow,
   StateBucket,
 } from './types';
+
+const STAGE_KEYS: (keyof FrameStages)[] = [
+  'unknownDelay',
+  'inputHandling',
+  'animation',
+  'layoutMeasure',
+  'draw',
+  'sync',
+  'commandIssue',
+  'swapBuffers',
+  'total',
+];
+
+function emptyStages(): FrameStages {
+  return {
+    unknownDelay: 0,
+    inputHandling: 0,
+    animation: 0,
+    layoutMeasure: 0,
+    draw: 0,
+    sync: 0,
+    commandIssue: 0,
+    swapBuffers: 0,
+    total: 0,
+  };
+}
+
+/**
+ * Difference the stage accumulators into per-frame averages.
+ *
+ * Returns `null` whenever there is no data to report — iOS, stage capture off,
+ * or nothing rendered yet. Never a row of zeroes: "no measurement" and "zero
+ * milliseconds" are different facts, and a caller charting the breakdown has to
+ * be able to tell them apart.
+ *
+ * The divisor is the *stage* listener's own frame count, not the Choreographer
+ * frame count. The two differ — the listener attaches later and only counts
+ * frames the system actually produced — and dividing by the wrong one would
+ * quietly scale every stage.
+ */
+function diffStages(
+  previous: FrameSnapshot['stages'],
+  current: FrameSnapshot['stages']
+): StageWindow | null {
+  if (current === null) return null;
+
+  const frameCount = Math.max(
+    0,
+    current.frameCount - (previous?.frameCount ?? 0)
+  );
+  const averageMs = emptyStages();
+
+  if (frameCount > 0) {
+    for (const key of STAGE_KEYS) {
+      const delta = Math.max(
+        0,
+        current.totalMs[key] - (previous?.totalMs[key] ?? 0)
+      );
+      averageMs[key] = delta / frameCount;
+    }
+  }
+
+  return {
+    frameCount,
+    systemDropCount: Math.max(
+      0,
+      current.systemDropCount - (previous?.systemDropCount ?? 0)
+    ),
+    averageMs,
+    worstFrameMsSinceStart: { ...current.worstFrameMs },
+  };
+}
 
 const MS_PER_SECOND = 1000;
 
@@ -91,6 +165,7 @@ export function diff(
     sampling: current.sampling,
 
     states: diffStates(previous.states ?? [], current.states ?? []),
+    stages: diffStages(previous.stages ?? null, current.stages ?? null),
 
     refreshRateHz: current.refreshRateHz,
     frameBudgetMs: current.frameBudgetMs,

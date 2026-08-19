@@ -1,6 +1,53 @@
 import { TurboModuleRegistry, type TurboModule } from 'react-native';
 
 /**
+ * Where a frame's time went, split into the stages Android reports.
+ *
+ * All values in milliseconds. `total` is the whole frame, not one of the parts —
+ * the others should roughly sum to it.
+ *
+ * | Stage | Meaning |
+ * |---|---|
+ * | `unknownDelay` | Waiting for the UI thread to become responsive. Should be ~0. |
+ * | `inputHandling` | Input processing |
+ * | `animation` | Animation callbacks |
+ * | `layoutMeasure` | Layout and measure — **the React Native hot spot** |
+ * | `draw` | Building display lists |
+ * | `sync` | Sync with the render thread |
+ * | `commandIssue` | Issuing GPU draw commands |
+ * | `swapBuffers` | Handing the buffer to the compositor |
+ * | `total` | Total time taken to produce the frame |
+ */
+export type FrameStages = {
+  unknownDelay: number;
+  inputHandling: number;
+  animation: number;
+  layoutMeasure: number;
+  draw: number;
+  sync: number;
+  commandIssue: number;
+  swapBuffers: number;
+  total: number;
+};
+
+/**
+ * Android `FrameMetrics` accumulators.
+ *
+ * **Android only.** `stages` is `null` on iOS, where no equivalent API exists —
+ * not zeroes, and not an approximation.
+ */
+export type NativeStages = {
+  /** Frames the stage listener saw. Lower than `frameCount`; it starts later. */
+  frameCount: number;
+  /** Frames the system reported dropped between listener invocations. */
+  systemDropCount: number;
+  /** Cumulative time per stage. Diff two of these for a window average. */
+  totalMs: FrameStages;
+  /** The single worst frame's full breakdown, since the first `start()`. */
+  worstFrameMs: FrameStages;
+};
+
+/**
  * One state combination's share of the frame cost.
  *
  * `key` is the composed label — `screen=FeedList,interaction=scrolling`, with
@@ -66,6 +113,9 @@ export type NativeFrameSnapshot = {
   /** Per-state-combination buckets. Monotonic, like the global counters. */
   states: NativeStateBucket[];
 
+  /** Android `FrameMetrics`. `null` on iOS, or before the first frame lands. */
+  stages: NativeStages | null;
+
   /**
    * The label frames are being attributed to right now — a current value, not
    * a counter. `(untagged)` when nothing is set.
@@ -89,6 +139,9 @@ export interface Spec extends TurboModule {
   setState(key: string, value: string): void;
   /** Remove one label. */
   clearState(key: string): void;
+
+  /** Turn the per-frame stage listener on or off. On by default. Android only. */
+  setStageCaptureEnabled(enabled: boolean): void;
 
   /**
    * Sleeps the UI thread. **Testing only — must not ship.**
