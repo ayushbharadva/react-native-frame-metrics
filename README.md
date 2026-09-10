@@ -1,95 +1,187 @@
 # react-native-frame-metrics
 
-Native frame timing for React Native — dropped frames and UI-thread FPS via a TurboModule, with independent JS-thread instrumentation.
+Native UI frame-callback timing and JavaScript callback cadence for React Native,
+with inferred UI drops and a development overlay. Android and iOS, New Architecture.
 
-> **Status: pre-release.** The API below is the design target, not yet a shipped implementation. See [Status](#status) for what currently works.
+> **0.1.0 release candidate, unpublished.** The implementation is available in this
+> checkout. Android Debug and Release builds pass; physical-device validation is
+> pending. iOS build and device validation are
+> deferred until macOS hardware is available. Release gates remain open; see
+> [RELEASING.md](RELEASING.md).
 
----
+## Install
 
-## Why this exists
+After 0.1.0 is published:
 
-When a React Native screen feels janky, "the app dropped frames" is not a diagnosis. Frames get dropped for two unrelated reasons, and the fix is different in each case:
-
-- **UI thread drops** — expensive native layout, measurement, or draw work. The platform can't produce a frame in its 16.6ms budget.
-- **JS thread drops** — expensive JavaScript blocking the runtime, so state updates and animations starve even when the UI thread is idle.
-
-Most profiling tooling reports a single blended frame rate, which tells you *that* something is slow but not *where* to look. This library measures both independently, so the number you get points at the layer that actually needs fixing.
-
-## How this differs from `react-native-performance`
-
-[`react-native-performance`](https://github.com/oblador/react-native-performance) is a mature, actively maintained library and the right tool for a different job. It implements a Performance API surface for React Native — `mark()`, `measure()`, resource timing, and native timeline events like app startup and script execution time. It answers *"how long did this discrete thing take?"*
-
-This library samples **continuous per-frame timing** and separates the two threads. It answers *"is this screen dropping frames right now, and which thread is responsible?"*
-
-They're complementary. If you want startup and navigation timings, use `react-native-performance`. If you want to profile scroll jank on a specific list, use this.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  JavaScript                                             │
-│                                                         │
-│  ┌──────────────────────┐   ┌────────────────────────┐  │
-│  │ JS-thread sampler    │   │ Typed JS API + overlay │  │
-│  │ (rAF loop, measures  │   │                        │  │
-│  │  JS runtime stalls)  │   │                        │  │
-│  └──────────────────────┘   └───────────┬────────────┘  │
-└───────────────────────────────────────── │ ─────────────┘
-                                           │
-                              Codegen-generated bindings
-                                           │
-┌───────────────────────────────────────── │ ─────────────┐
-│  TurboModule (native)                    ▼              │
-│                                                         │
-│  ┌────────────────────────┐  ┌────────────────────────┐ │
-│  │ Android — Kotlin       │  │ iOS — Objective-C++    │ │
-│  │ Choreographer          │  │ CADisplayLink on the   │ │
-│  │ .FrameCallback         │  │ main run loop          │ │
-│  └────────────────────────┘  └────────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
+```sh
+npm install react-native-frame-metrics@0.1.0
+cd ios && pod install
 ```
 
-### Design notes
+Before publication, run `yarn build` and `npm pack` in this repository, then install
+that `.tgz` in your app. Rebuild the native app after installation. Expo Go cannot
+load this module; an Expo development build with native autolinking can.
 
-**Drops are inferred from timestamp gaps, not counted from missed callbacks.** Both `Choreographer.FrameCallback` and `CADisplayLink` are driven by the main thread. When that thread is blocked — exactly the condition worth measuring — the callback doesn't fire at all. So a dropped frame can't be observed directly; it's derived from the delta between consecutive callback timestamps against the display's refresh interval.
+React Native **0.76+ with the New Architecture enabled** is the intended target.
+The included example and current development checks use **0.85.0**. The minimum
+version still needs a native compatibility run before it is claimed as verified.
 
-**JS-thread rate needs a separate mechanism.** It can't be read from the native frame callbacks, because those run on the UI thread. A JS-side loop measures runtime stalls independently, which is what makes the two-number output possible.
+On iPhone, enable `CADisableMinimumFrameDurationOnPhone` in the host app's
+`Info.plist` to permit high-refresh display callbacks. The example already does.
+The OS can lower callback cadence for power, thermal, or adaptive-refresh reasons.
 
-**Refresh rate is not assumed to be 60Hz.** The frame budget is derived from the display's actual refresh interval, so 90Hz and 120Hz devices report correctly rather than showing phantom drops.
+## Use
 
-## Planned API
+```tsx
+import { useEffect } from 'react';
+import { View } from 'react-native';
+import {
+  start,
+  stop,
+  subscribe,
+  FrameMetricsOverlay,
+} from 'react-native-frame-metrics';
 
-```ts
-import { start, stop, subscribe } from 'react-native-frame-metrics';
+export function Screen() {
+  useEffect(() => {
+    const unsubscribe = subscribe((sample) => {
+      // Keep listeners lightweight; avoid logging every sample in benchmarks.
+      console.log(sample.uiThreadFps, sample.jsThreadFps, sample.droppedFrames);
+    });
+    start({ sampleIntervalMs: 500 });
+    return () => {
+      unsubscribe();
+      stop();
+    };
+  }, []);
 
-start();
-
-const unsubscribe = subscribe((sample) => {
-  // {
-  //   uiThreadFps: number
-  //   jsThreadFps: number
-  //   droppedFrames: number
-  //   frameBudgetMs: number
-  // }
-});
+  return (
+    <View style={{ flex: 1 }}>
+      <FrameMetricsOverlay />
+    </View>
+  );
+}
 ```
 
-A dev-mode overlay component is planned for on-device inspection without wiring up a listener.
+`start(options?)` starts one process-wide session. Repeated calls are no-ops;
+call `stop()` first to change its interval. The default interval is 500 ms, and
+finite values from 100 to 60000 ms are accepted. The interval is a minimum delay
+between reads; a blocked thread can delay delivery. Calls never overlap.
 
-## Status
+`stop()` is idempotent and cancels JS timers, rAF callbacks, lifecycle observers,
+and native sampling. Pending responses cannot reach a later session. Subscriptions
+remain registered until their unsubscribe functions are called. Give one owner
+responsibility for start/stop when multiple screens share a session.
 
-- [ ] Android — `Choreographer.FrameCallback` sampling
-- [ ] Codegen spec and TurboModule bindings
-- [ ] iOS — `CADisplayLink` sampling
-- [ ] JS-thread instrumentation
-- [ ] Dev-mode overlay component
-- [ ] Example app with a jank-heavy list, profiled before and after optimization
-- [ ] Published to npm
+`subscribe(listener)` returns an idempotent unsubscribe function. It does not start
+sampling or replay old samples. Listeners receive immutable samples; one throwing
+listener is reported to the console without preventing delivery to others. A failed
+native read stops sampling and reports the error to the console.
 
-## Requirements
+`FrameMetricsOverlay` only observes samples; start the session yourself. It renders
+nothing and subscribes to nothing when `__DEV__` is false. The imperative API also
+works in release builds, allowing profiling without development-mode overhead.
 
-- React Native 0.76+ (New Architecture required — this is a TurboModule and has no legacy bridge fallback)
-- Android and iOS
+## Sample
+
+| Field           | Meaning                                                         |
+| --------------- | --------------------------------------------------------------- |
+| `uiThreadFps`   | Observed native callback intervals / their elapsed seconds      |
+| `jsThreadFps`   | Observed JS rAF callback intervals / their elapsed seconds      |
+| `droppedFrames` | Inferred missed **UI** callback intervals in this native window |
+| `frameBudgetMs` | Current native callback budget, e.g. about 16.67 ms at 60 Hz    |
+| `durationMs`    | Elapsed native time covered by this sample                      |
+
+Counts are per window, not cumulative. The first callback establishes a baseline;
+empty native windows are not delivered. Native counts are accumulated even while
+JavaScript is blocked. Sampling pauses in the background and discards its baseline,
+so time spent away from the app is not reported as jank. Native refresh-budget
+changes also discard the mixed-refresh window.
+
+## How it works and what it cannot tell you
+
+- **Android:** `Choreographer.FrameCallback` on the main thread, using frame
+  timestamps and the host display's reported refresh rate.
+- **iOS:** `CADisplayLink` in common run-loop modes, using its timestamp and
+  target timestamp to obtain the callback budget.
+- **JavaScript:** a separate `requestAnimationFrame` loop records the monotonic
+  clock at execution, rather than trusting the supplied vsync timestamp.
+- Each positive native gap contributes `max(0, round(gap / budget) - 1)` inferred
+  drops. Half-interval rounding tolerates small timestamp jitter. Counters use
+  constant memory and are read through a codegen-backed TurboModule promise.
+
+These are **callback-cadence measurements**, not GPU presentation metrics, exact
+rendered-frame counts, frame-stage timings, or automatic root-cause attribution.
+A native animation can continue while JS cadence falls. However, React Native's
+rAF scheduling also depends on native/UI scheduling, so **a UI stall can lower both
+numbers**. A low JS value alone does not prove JavaScript caused the stall.
+
+The JS and native windows are sampled separately and are not synchronized traces.
+JS stalls delay delivery; refresh switches, timer ordering, adaptive display rates,
+and system callback throttling can affect readings. A reported Android display rate
+may differ from the cadence chosen for an individual app. Confirm findings with
+Android Studio/Perfetto or Instruments. Run before/after comparisons on the same
+physical device, build mode, and display settings; development overhead matters.
+
+This complements tools such as `react-native-performance`, which measure discrete
+marks and durations. It does not replace a platform profiler.
+
+## Example and development
+
+```sh
+corepack enable
+yarn install --immutable
+yarn example android
+# macOS: install example/Gemfile dependencies and example/ios pods first
+yarn example ios
+
+yarn lint
+yarn typecheck
+yarn test --runInBand
+yarn build
+npm pack --dry-run
+```
+
+The [example](example/README.md) switches between a list with deliberately expensive
+row rendering and a memoized fixed-layout version. It also injects a known 250 ms JS
+stall and displays per-run statistics. Actual before/after device measurements must
+be recorded using the procedure in that guide; no benchmark results are fabricated.
+
+## Roadmap
+
+### Implemented for 0.1.0
+
+Checked items describe implemented code, not verified device compatibility.
+
+- [x] Android Choreographer sampler
+- [x] Codegen spec and TurboModule API
+- [x] iOS CADisplayLink sampler
+- [x] JS callback instrumentation
+- [x] Development overlay
+- [x] Janky/optimized example with live statistics
+
+### Before publishing 0.1.0
+
+- [x] JS regression tests, lint, TypeScript, package build, and codegen checks
+- [x] Android Debug and Release example builds (RN 0.85.0, arm64)
+- [x] Inspect npm contents, package exports, consumer types, and Android autolinking
+- [ ] Validate a packed npm tarball in a clean Android consumer app
+- [ ] Record Android physical-device results, including lifecycle and refresh changes
+- [ ] Verify the intended React Native 0.76 minimum, or narrow the supported range
+- [ ] Complete the deferred iOS validation below
+- [ ] Review the final tarball and release checks in [RELEASING.md](RELEASING.md)
+- [ ] Publish 0.1.0 to npm and create the matching `0.1.0` Git tag
+
+### Deferred until macOS hardware is available
+
+- [ ] Compile the iOS example and a packed-package consumer in Debug and Release
+- [ ] Record physical-iPhone before/after results and lifecycle/high-refresh checks
+- [ ] Verify iOS compatibility at the declared minimum React Native version
+
+Current development is on Windows. The iOS implementation is retained for later
+validation; it is not yet verified. Deferring these checks does not mark the
+cross-platform release ready. Device results belong in the
+[example validation record](example/README.md#results-fill-from-actual-runs).
 
 ## License
 

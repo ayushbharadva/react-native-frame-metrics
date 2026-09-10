@@ -1,7 +1,7 @@
 {
   "name": "react-native-frame-metrics",
   "version": "0.1.0",
-  "description": "Jank diagnoser for React Native - hitch ratio, frame stage breakdown, and state attribution via a TurboModule.",
+  "description": "Native UI frame timing and JavaScript callback cadence for React Native, with inferred dropped frames and a development overlay.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {
@@ -29,7 +29,9 @@
     "!**/__tests__",
     "!**/__fixtures__",
     "!**/__mocks__",
-    "!**/.*"
+    "!**/.*",
+    "CHANGELOG.md",
+    "RELEASING.md"
   ],
   "scripts": {
     "example": "yarn workspace react-native-frame-metrics-example",
@@ -37,13 +39,14 @@
     "prepare": "bob build",
     "typecheck": "tsc",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
-    "test": "jest"
+    "test": "jest",
+    "build": "bob build",
+    "prepack": "yarn build"
   },
   "keywords": [
     "react-native",
     "performance",
     "jank",
-    "hitch-ratio",
     "frame-metrics",
     "fps",
     "frame-rate",
@@ -141,7 +144,8 @@
     "modulePathIgnorePatterns": [
       "<rootDir>/example/node_modules",
       "<rootDir>/lib/"
-    ]
+    ],
+    "watchman": false
   },
   "create-react-native-library": {
     "type": "turbo-module",

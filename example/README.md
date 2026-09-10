@@ -1,97 +1,42 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Frame metrics example
 
-# Getting Started
+This app uses the local library. Install dependencies at the repository root with
+`yarn install --immutable`. Run `yarn example android`, or on macOS install the
+example's Ruby dependencies and pods (`cd example`, `bundle install`,
+`bundle exec pod install --project-directory=ios`), then `yarn example ios`.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+## Before/after profiling procedure
 
-## Step 1: Start Metro
+1. Use a physical device. Record model, OS, React Native version, display refresh
+   setting, low-power mode, and Debug/Release mode. Prefer Release for comparisons.
+2. Start the janky list, wait for initial render, and scroll down/up for 15 seconds.
+   Record the displayed run average UI FPS and total inferred UI drops; note JS FPS.
+3. Switch to the optimized list. The session and list reset. Repeat the same scroll
+   pattern for 15 seconds. Record the same readings. Repeat three times per mode.
+4. Press **Block JS for 250 ms**. Watch the next few samples for reduced JS cadence.
+   UI cadence may remain healthy; a UI drop is not required for a JS stall.
+5. Background for at least 5 seconds, then return. Confirm there is no giant drop
+   count from background time. Stop/restart and reload the app to check cleanup.
+6. On supported hardware, repeat at 60/90/120 Hz and change refresh settings during
+   sampling. Check that switching does not create a false drop spike.
+7. Test a UI-thread stall with platform debugging/profiling tools. Both JS and UI
+   cadence may fall because rAF scheduling also depends on the UI thread.
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+The slow mode deliberately spends about 3 ms in each row render and renders larger
+batches. The optimized mode removes that work, memoizes rows, supplies fixed layouts,
+and uses smaller batches. This is a reproducible demonstration, not a claim about
+a specific real app. Statistics include all samples since switching modes, including
+idle time. Capture comparable durations and interactions.
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+## Results (fill from actual runs)
 
-```sh
-# Using npm
-npm start
+Android physical-device runs are pending. iOS builds and physical-iPhone runs are
+deferred until macOS hardware is available. No device results have been recorded.
 
-# OR using Yarn
-yarn start
-```
+| Device / OS / RN / build / Hz | Mode      | Duration | UI FPS | UI drops | JS FPS observations |
+| ----------------------------- | --------- | -------- | ------ | -------- | ------------------- |
+| Pending physical-device run   | Janky     |          |        |          |                     |
+| Pending physical-device run   | Optimized |          |        |          |                     |
 
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
-
-```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
-```
-
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
-```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+Do not publish numerical claims until the runs are recorded. An emulator build
+validates integration but cannot establish real-device performance accuracy.
