@@ -95,9 +95,19 @@ Taps from an idle 24 Hz screen, where the panel takes 75-108 ms to wake to 120 H
 | **Block JS 250 ms** (4 taps)     | 0 ms each       | 237 / 254 / 240 / 244 ms |
 | **Block UI 250 ms** (3 taps)     | 242 / 233 / 242 ms | 8 / 8 / 0 ms       |
 
+In a debug build served by Metro, the overlay read `UI 62 fps | 31 dropped | 258 ms
+stall` / `JS 18 ms stall` after **Block UI 250 ms**, and `0 dropped | 0 ms stall` /
+`JS 240 ms stall` after **Block JS 250 ms**.
+
 For comparison, the earlier `requestAnimationFrame`-based JS measurement on the same
 phone read 12 fps UI **and** 12 fps JS during a 500 ms UI-only block, and once
 reported a 2000 ms UI block as a single dropped frame.
+
+### Android emulator (Pixel 3 AVD), Android 12, 60 Hz
+
+All 16 checks passed with no dropped frames while idle. UI blocks of 100/500/2000 ms
+reported 83/500/2000 ms UI stall and 0 ms JS stall; JS blocks reported 75/468/1985 ms
+JS stall and 0 ms UI stall.
 
 ### Android emulator (sdk_gphone64_x86_64), Android 15, 60 Hz, 4 vCPUs
 

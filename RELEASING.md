@@ -15,6 +15,8 @@ rerun the gates against the exact commit being released.
 | Example Android release build, RN 0.85.0                 | Passed: arm64-v8a and x86_64                                                             |
 | Physical Android device (Galaxy Z Fold4, Android 16)     | Passed: stall attribution (3 runs), scrolling, lifecycle; see `example/README.md`        |
 | Android emulator (API 35, 60 Hz)                         | Passed on the final build; noisy (drops frames while idle), not performance data        |
+| Android emulator (API 31, Android 12, 60 Hz)             | Passed: all 16 checks, 0 dropped frames while idle                                       |
+| Development overlay in a debug build (Fold4, Metro)      | Renders; Block UI and Block JS move only their own thread's stall                        |
 | Packed tarball in a clean RN 0.76.9 Android app          | Passed after a fix: release build, autolinking, TypeScript 5.0, samples and stalls on the Fold4 |
 | iOS source                                               | Objective-C++ syntax check against stub headers only                                     |
 | iOS build and physical-iPhone run                        | Not done: needs macOS                                                                    |
