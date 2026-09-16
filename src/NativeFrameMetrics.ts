@@ -5,6 +5,8 @@ export type NativeSample = {
   frameCount: number;
   droppedFrames: number;
   durationMs: number;
+  uiStallMs: number;
+  jsStallMs: number;
   frameBudgetMs: number;
 };
 

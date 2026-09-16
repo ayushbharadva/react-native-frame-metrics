@@ -2,6 +2,14 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { subscribe, type FrameMetricsSample } from './metrics';
 
+function describe(sample: FrameMetricsSample) {
+  return (
+    `UI ${sample.uiThreadFps.toFixed(0)} fps | ${sample.droppedFrames} dropped | ` +
+    `${sample.uiStallMs.toFixed(0)} ms stall\n` +
+    `JS ${sample.jsStallMs.toFixed(0)} ms stall | budget ${sample.frameBudgetMs.toFixed(2)} ms`
+  );
+}
+
 /** Observes an explicitly started session. Renders nothing in release builds. */
 export function FrameMetricsOverlay() {
   const [sample, setSample] = useState<FrameMetricsSample | null>(null);
@@ -13,9 +21,7 @@ export function FrameMetricsOverlay() {
   return (
     <View pointerEvents="none" style={styles.overlay}>
       <Text style={styles.text}>
-        {sample
-          ? `UI ${sample.uiThreadFps.toFixed(1)} FPS | JS ${sample.jsThreadFps.toFixed(1)} FPS\nUI drops ${sample.droppedFrames} | budget ${sample.frameBudgetMs.toFixed(2)} ms`
-          : 'Frame metrics: waiting for samples'}
+        {sample ? describe(sample) : 'Frame metrics: waiting for samples'}
       </Text>
     </View>
   );

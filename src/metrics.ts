@@ -1,15 +1,16 @@
 import { AppState } from 'react-native';
 import NativeFrameMetrics from './NativeFrameMetrics';
-import { JsFrameCounter } from './JsFrameCounter';
-import { now } from './clock';
 
 export type FrameMetricsSample = Readonly<{
-  /** Native UI callback cadence, not GPU presentation rate. */
+  /** Native UI frame callbacks per second. Follows the display's current refresh rate. */
   uiThreadFps: number;
-  /** JS requestAnimationFrame callback cadence. */
-  jsThreadFps: number;
-  /** Inferred missed UI callback intervals in this sample, not cumulative. */
+  /** Inferred missed UI frames in this sample, not cumulative. */
   droppedFrames: number;
+  /** UI time lost beyond the frame budget in intervals with dropped frames, in ms. */
+  uiStallMs: number;
+  /** JS-thread queue delay beyond the frame budget, measured natively, in ms. */
+  jsStallMs: number;
+  /** Current frame budget, e.g. about 8.33 ms at 120 Hz. */
   frameBudgetMs: number;
   /** Duration covered by the native sample. */
   durationMs: number;
@@ -18,42 +19,32 @@ export type FrameMetricsSample = Readonly<{
 export type StartOptions = { sampleIntervalMs?: number };
 type Listener = (sample: FrameMetricsSample) => void;
 const listeners = new Set<Listener>();
-const jsFrames = new JsFrameCounter();
 let running = false;
 let generation = 0;
 let intervalMs = 500;
-let frame: number | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let appStateSubscription:
   ReturnType<typeof AppState.addEventListener> | undefined;
 
-function cancelLoops() {
+function cancelPolling() {
   generation += 1;
-  if (frame !== undefined) cancelAnimationFrame(frame);
   if (timer !== undefined) clearTimeout(timer);
-  frame = undefined;
   timer = undefined;
-  jsFrames.reset();
 }
 
-function beginLoops() {
-  cancelLoops();
+function beginPolling() {
+  cancelPolling();
   const current = generation;
-  const tick = () => {
-    if (!running || current !== generation) return;
-    jsFrames.record(now());
-    frame = requestAnimationFrame(tick);
-  };
   const poll = async () => {
     try {
       const native = await NativeFrameMetrics!.getMetrics();
       if (!running || current !== generation) return;
-      const jsThreadFps = jsFrames.sample();
       if (native.durationMs > 0) {
         const sample: FrameMetricsSample = Object.freeze({
           uiThreadFps: (native.frameCount * 1000) / native.durationMs,
-          jsThreadFps,
           droppedFrames: native.droppedFrames,
+          uiStallMs: native.uiStallMs,
+          jsStallMs: native.jsStallMs,
           frameBudgetMs: native.frameBudgetMs,
           durationMs: native.durationMs,
         });
@@ -77,7 +68,6 @@ function beginLoops() {
       timer = setTimeout(poll, intervalMs);
     }
   };
-  frame = requestAnimationFrame(tick);
   timer = setTimeout(poll, intervalMs);
 }
 
@@ -103,21 +93,21 @@ export function start(options: StartOptions = {}): void {
   appStateSubscription = AppState.addEventListener('change', (state) => {
     if (state === 'active') {
       NativeFrameMetrics!.start();
-      beginLoops();
+      beginPolling();
     } else {
-      cancelLoops();
+      cancelPolling();
       NativeFrameMetrics!.stop();
     }
   });
   if (AppState.currentState === 'active' || AppState.currentState === null)
-    beginLoops();
+    beginPolling();
 }
 
 /** Stops sampling and cancels pending delivery. Registered listeners remain. */
 export function stop(): void {
   if (!running) return;
   running = false;
-  cancelLoops();
+  cancelPolling();
   appStateSubscription?.remove();
   appStateSubscription = undefined;
   NativeFrameMetrics?.stop();

@@ -1,5 +1,14 @@
 import { memo, useEffect, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  DeviceEventEmitter,
+  FlatList,
+  NativeModules,
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import {
   FrameMetricsOverlay,
   start,
@@ -7,6 +16,10 @@ import {
   subscribe,
   type FrameMetricsSample,
 } from 'react-native-frame-metrics';
+
+/** Example-only Android module that sleeps the UI thread (StallPackage.kt). */
+const exampleStall = NativeModules.ExampleStall as
+  { blockUiThread(ms: number): void } | undefined;
 
 const items = Array.from({ length: 400 }, (_, index) => ({
   id: String(index),
@@ -41,29 +54,66 @@ const getItemLayout = (_: unknown, index: number) => ({
   index,
 });
 
+function blockJs(ms: number) {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    /* known JS stall */
+  }
+}
+
+/** Sent through adb; see "Automated Android run" in example/README.md. */
+type Command = { command?: string; ms?: number };
+
+type Run = {
+  samples: number;
+  durationMs: number;
+  frames: number;
+  droppedFrames: number;
+  uiStallMs: number;
+  jsStallMs: number;
+};
+
+function Button({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      style={styles.button}
+      onPress={onPress}
+    >
+      <Text style={styles.buttonText}>{label}</Text>
+    </Pressable>
+  );
+}
+
 export default function App() {
   const [optimized, setOptimized] = useState(false);
   const [sample, setSample] = useState<FrameMetricsSample | null>(null);
-  const [summary, setSummary] = useState<{
-    fps: number;
-    drops: number;
-    count: number;
-  } | null>(null);
+  const [run, setRun] = useState<Run | null>(null);
+
   useEffect(() => {
+    const mode = optimized ? 'optimized' : 'janky';
+    const total: Run = {
+      samples: 0,
+      durationMs: 0,
+      frames: 0,
+      droppedFrames: 0,
+      uiStallMs: 0,
+      jsStallMs: 0,
+    };
     setSample(null);
-    let duration = 0;
-    let frames = 0;
-    let drops = 0;
-    let count = 0;
+    setRun(null);
     const unsubscribe = subscribe((value) => {
+      // One parseable line per sample for device runs (logcat tag ReactNativeJS).
+      console.log(`[frame-metrics] mode=${mode} ${JSON.stringify(value)}`);
+      total.samples += 1;
+      total.durationMs += value.durationMs;
+      total.frames += (value.uiThreadFps * value.durationMs) / 1000;
+      total.droppedFrames += value.droppedFrames;
+      total.uiStallMs += value.uiStallMs;
+      total.jsStallMs += value.jsStallMs;
       setSample(value);
-      duration += value.durationMs;
-      frames += (value.uiThreadFps * value.durationMs) / 1000;
-      drops += value.droppedFrames;
-      count += 1;
-      setSummary({ fps: (frames * 1000) / duration, drops, count });
+      setRun({ ...total });
     });
-    setSummary(null);
     start();
     return () => {
       unsubscribe();
@@ -71,41 +121,57 @@ export default function App() {
     };
   }, [optimized]);
 
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(
+      'FrameMetricsCommand',
+      ({ command, ms = 250 }: Command) => {
+        console.log(`[frame-metrics] command=${command} ms=${ms}`);
+        if (command === 'blockJs') blockJs(ms);
+        else if (command === 'blockUi') exampleStall?.blockUiThread(ms);
+        else if (command === 'janky') setOptimized(false);
+        else if (command === 'optimized') setOptimized(true);
+        else if (command === 'restart') {
+          stop();
+          start();
+        }
+      }
+    );
+    return () => subscription.remove();
+  }, []);
+
   return (
     <View style={styles.container}>
+      <StatusBar barStyle="dark-content" />
       <Text style={styles.title}>Frame metrics lab</Text>
-      <Text>Scroll each mode for 15 seconds on the same device.</Text>
-      <Pressable
-        accessibilityRole="button"
-        style={styles.button}
+      <Text>Freeze one thread and watch which stall number moves.</Text>
+      <View style={styles.buttons}>
+        <Button label="Block JS 250 ms" onPress={() => blockJs(250)} />
+        {exampleStall ? (
+          <Button
+            label="Block UI 250 ms"
+            onPress={() => exampleStall.blockUiThread(250)}
+          />
+        ) : null}
+      </View>
+      <Button
+        label={
+          optimized
+            ? 'Fast rows — switch to slow rows'
+            : 'Slow rows (3 ms JS each) — switch to fast rows'
+        }
         onPress={() => setOptimized(!optimized)}
-      >
-        <Text style={styles.buttonText}>
-          {optimized
-            ? 'Optimized list — switch to janky'
-            : 'Janky list — switch to optimized'}
-        </Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        style={styles.button}
-        onPress={() => {
-          const end = performance.now() + 250;
-          while (performance.now() < end) {
-            /* known JS stall */
-          }
-        }}
-      >
-        <Text style={styles.buttonText}>Block JS for 250 ms</Text>
-      </Pressable>
+      />
       <Text style={styles.stats}>
         {sample
-          ? `UI ${sample.uiThreadFps.toFixed(1)} / JS ${sample.jsThreadFps.toFixed(1)} FPS`
+          ? `UI ${sample.uiThreadFps.toFixed(0)} fps, ${sample.droppedFrames} dropped, ` +
+            `${sample.uiStallMs.toFixed(0)} ms stall | JS ${sample.jsStallMs.toFixed(0)} ms stall`
           : 'Collecting samples...'}
       </Text>
       <Text>
-        {summary
-          ? `Run: ${summary.fps.toFixed(1)} UI FPS, ${summary.drops} UI drops (${summary.count} samples)`
+        {run
+          ? `Run: ${((run.frames * 1000) / run.durationMs).toFixed(1)} UI fps, ` +
+            `${run.droppedFrames} dropped, UI stall ${run.uiStallMs.toFixed(0)} ms, ` +
+            `JS stall ${run.jsStallMs.toFixed(0)} ms (${run.samples} samples)`
           : 'Run reset'}
       </Text>
       <FlatList
@@ -132,7 +198,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8fafc',
   },
   title: { fontSize: 26, fontWeight: '700', color: '#0f172a', marginBottom: 8 },
+  buttons: { flexDirection: 'row', gap: 10 },
   button: {
+    flexGrow: 1,
     padding: 12,
     backgroundColor: '#1d4ed8',
     borderRadius: 8,
