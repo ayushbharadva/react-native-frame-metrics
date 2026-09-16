@@ -234,3 +234,6 @@ example/ios/build
 # Nitro Modules (not used, but scaffold-standard)
 nitrogen/
 .codegen/
+
+# Device validation output (example/scripts/android-validation.mjs)
+validation-results/

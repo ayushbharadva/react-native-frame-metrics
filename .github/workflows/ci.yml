@@ -116,6 +116,11 @@ jobs:
         run: |
           yarn turbo run build:android --cache-dir="${{ env.TURBO_CACHE_DIR }}"
 
+      - name: Run native unit tests
+        if: env.turbo_cache_hit != 1
+        working-directory: example/android
+        run: ./gradlew :react-native-frame-metrics:testReleaseUnitTest --no-daemon --console=plain
+
   build-ios:
     runs-on: macos-latest
 

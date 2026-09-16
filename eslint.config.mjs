@@ -24,6 +24,6 @@ export default defineConfig([
     },
   },
   {
-    ignores: ['node_modules/', 'lib/', '**/build/', '.codegen/'],
+    ignores: ['node_modules/', 'lib/', '**/build/', 'coverage/', '.codegen/'],
   },
 ]);

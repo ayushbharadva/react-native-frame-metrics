@@ -26,12 +26,12 @@
     "!android/gradlew",
     "!android/gradlew.bat",
     "!android/local.properties",
+    "!android/src/test",
     "!**/__tests__",
     "!**/__fixtures__",
     "!**/__mocks__",
     "!**/.*",
-    "CHANGELOG.md",
-    "RELEASING.md"
+    "CHANGELOG.md"
   ],
   "scripts": {
     "example": "yarn workspace react-native-frame-metrics-example",
