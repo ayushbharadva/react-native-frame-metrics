@@ -58,17 +58,41 @@ class FrameWindowTest {
   }
 
   @Test
-  fun intervalAcrossARateChangeUsesTheSlowerRate() {
+  fun switchingFromIdleOnTouchIsNotADrop() {
+    // Gaps measured when a tap or swipe woke the panel from 24 Hz to 120 Hz.
+    for (gapMs in doubleArrayOf(75.14, 83.53, 108.3)) {
+      val window = FrameWindow()
+      window.recordFrame(nanos(0.0), hz24)
+      window.recordFrame(nanos(gapMs), hz120)
+      assertEquals("gap $gapMs", 0, window.take().droppedFrames)
+    }
+    // Settling back to idle: the long gap arrives one frame after the reported change.
+    val window = FrameWindow()
+    window.frames(hz120, 0.0, hz120)
+    window.frames(hz24, hz120 + 4.65, hz120 + 4.65 + 74.77)
+    assertEquals(0, window.take().droppedFrames)
+  }
+
+  @Test
+  fun freezeDuringARateSwitchStillCounts() {
     val window = FrameWindow()
     window.recordFrame(nanos(0.0), hz24)
-    window.recordFrame(nanos(75.12), hz120)
-    assertEquals(0, window.take().droppedFrames)
-
-    window.recordFrame(nanos(2075.12), hz24)
-    window.recordFrame(nanos(4075.12), hz120)
+    window.recordFrame(nanos(2000.0), hz120)
     val sample = window.take()
-    assertEquals(47 + 47, sample.droppedFrames)
+    assertEquals(46, sample.droppedFrames)
+    assertEquals(2000 - 2 * hz24, sample.uiStallMs, 0.01)
     assertEquals(hz120, sample.frameBudgetMs, 1e-9)
+  }
+
+  @Test
+  fun switchAllowanceLastsThreeFrames() {
+    val window = FrameWindow()
+    window.frames(hz60, 0.0)
+    // Change frame and the next two may run one frame long; the fourth may not.
+    window.frames(hz120, 2 * hz60, 2 * hz60 + 2 * hz120, 2 * hz60 + 4 * hz120)
+    assertEquals(0, window.take().droppedFrames)
+    window.frames(hz120, 2 * hz60 + 6 * hz120)
+    assertEquals(1, window.take().droppedFrames)
   }
 
   @Test

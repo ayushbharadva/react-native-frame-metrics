@@ -9,9 +9,12 @@
 #include <time.h>
 
 static const double kDefaultBudgetMs = 1000.0 / 60.0;
-// Mirrors FrameWindow.kt: vsync-aligned drops land on whole budget multiples, while
-// adaptive-refresh transitions leave 1.5x-1.8x intervals. Count drops from 1.85x.
+// Mirrors FrameWindow.kt: vsync-aligned drops land on whole budget multiples, while a
+// display changing rate leaves 1.5x-1.8x intervals, so drops count from 1.85x. For three
+// frames after a rate change, one extra slow frame is allowed while the display switches.
 static const double kDropTolerance = 0.15;
+static const double kBudgetChangeMs = 0.1;
+static const int kSettlingFrames = 3;
 static const int64_t kProbeIntervalNs = 16 * NSEC_PER_MSEC;
 
 @class FrameMetrics;
@@ -35,6 +38,7 @@ static const int64_t kProbeIntervalNs = 16 * NSEC_PER_MSEC;
   BOOL _invalidated;
   CFTimeInterval _previous;
   double _previousBudgetMs;
+  int _settlingFrames;
   double _frames;
   double _drops;
   double _durationMs;
@@ -65,6 +69,7 @@ static const int64_t kProbeIntervalNs = 16 * NSEC_PER_MSEC;
 - (void)reset {
   _previous = 0;
   _previousBudgetMs = 0;
+  _settlingFrames = 0;
   _frames = 0;
   _drops = 0;
   _durationMs = 0;
@@ -115,19 +120,24 @@ static const int64_t kProbeIntervalNs = 16 * NSEC_PER_MSEC;
   double budget = (link.targetTimestamp - link.timestamp) * 1000.0;
   if (!std::isfinite(budget) || budget <= 0) budget = kDefaultBudgetMs;
   if (_previous > 0 && link.timestamp <= _previous) return;
+  if (_previousBudgetMs > 0 && std::abs(budget - _previousBudgetMs) > kBudgetChangeMs) {
+    _settlingFrames = kSettlingFrames;
+  }
   if (_previous > 0) {
     const double deltaMs = (link.timestamp - _previous) * 1000.0;
-    // An interval that spans a refresh-rate change is judged against the slower rate.
+    // Judge an interval that spans a rate change against the slower rate.
     const double intervalBudget = std::max(_previousBudgetMs, budget);
+    const double allowedFrames = _settlingFrames > 0 ? 2.0 : 1.0;
     const double dropped =
-        std::max(0.0, std::floor(deltaMs / intervalBudget + kDropTolerance) - 1.0);
+        std::max(0.0, std::floor(deltaMs / intervalBudget + kDropTolerance) - allowedFrames);
     _frames += 1;
     _durationMs += deltaMs;
     if (dropped > 0) {
       _drops += dropped;
-      _uiStallMs += deltaMs - intervalBudget;
+      _uiStallMs += deltaMs - intervalBudget * allowedFrames;
     }
   }
+  if (_settlingFrames > 0) _settlingFrames -= 1;
   _previous = link.timestamp;
   _previousBudgetMs = budget;
   _budgetMs.store(budget);
