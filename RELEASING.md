@@ -1,37 +1,34 @@
 # Releasing 0.1.0
 
-## Current validation record
+## Validation record
 
-Version 0.1.0 is an unpublished release candidate. Development is currently on
-Windows; all iOS builds and physical-iPhone validation are deferred until macOS
-hardware is available. Keep those gates open and do not claim verified iOS support.
+Version 0.1.0 is unpublished. Checks below were run on 2026-09-16 on Windows (Node
+20.19.4, JDK 17) against `feat/frame-metrics`. CI uses the Node version in `.nvmrc`;
+rerun the gates against the exact commit being released.
 
-Checks recorded on 2026-09-09 against the uncommitted `feat/frame-metrics` checkout,
-using Node 24.19.0, JDK 17, and the RN 0.85.0 example. CI uses the Node version in
-`.nvmrc`; rerun release gates against the approved commit.
+| Check                                                    | Status                                                                                   |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Jest (JS API)                                            | Passed: 7 tests                                                                          |
+| JVM unit tests (native frame accounting)                 | Passed: 10 tests                                                                         |
+| ESLint and TypeScript                                    | Passed                                                                                   |
+| Package build and npm contents                           | Passed: 35 files, no native test sources                                                 |
+| Example Android release build, RN 0.85.0                 | Passed: arm64-v8a and x86_64                                                             |
+| Physical Android device (Galaxy Z Fold4, Android 16)     | Passed: stall attribution (3 runs), scrolling, lifecycle; see `example/README.md`        |
+| Android emulator (API 35, 60 Hz)                         | Passed on the final build; noisy (drops frames while idle), not performance data        |
+| Packed tarball in a clean RN 0.76.9 Android app          | Passed after a fix: release build, autolinking, TypeScript 5.0, samples and stalls on the Fold4 |
+| iOS source                                               | Objective-C++ syntax check against stub headers only                                     |
+| iOS build and physical-iPhone run                        | Not done: needs macOS                                                                    |
+| CI on the release commit                                 | Not run: nothing has been pushed                                                         |
 
-| Check                                            | Status                                                  |
-| ------------------------------------------------ | ------------------------------------------------------- |
-| JS tests                                         | Passed: 10 tests on Windows                             |
-| ESLint and TypeScript                            | Passed on Windows                                       |
-| Package build and Android codegen                | Passed on Windows                                       |
-| npm tarball, exports, consumer TypeScript        | Passed; 44 files, Android autolinking metadata resolves |
-| Android Debug and Release, RN 0.85.0             | Passed: arm64-v8a APKs, including Release lint          |
-| Packed-package consumer build                    | Pending                                                 |
-| Physical Android measurements                    | Pending                                                 |
-| iOS compilation and physical-iPhone measurements | Deferred: macOS hardware unavailable                    |
-| React Native 0.76 minimum compatibility          | Pending on both platforms                               |
-| Final commit and CI                              | Pending maintainer approval and personal Git identity   |
+The first RN 0.76.9 consumer build failed to compile: `ReactModuleInfo` parameter
+names differ between React Native versions, so `FrameMetricsPackage.kt` now passes
+them positionally. That app was then built in Release, installed from the packed
+`.tgz`, and run on the Fold4: a scheduled 400 ms JS block read 382 ms JS stall and
+0 ms UI stall, and four taps on its button from an idle screen read 277-292 ms JS
+stall with no UI stall.
 
-The public npm registry currently lists 0.0.1; 0.1.0 is not published as of this
-check. Package ownership and personal-account publish permission still need to be
-confirmed before publishing.
-
-The packed-package check installs the tarball into an isolated folder, resolves
-published entry points and declarations without a source alias, and checks Android
-autolinking metadata. It is not a clean consumer native build; that gate remains
-pending. Local APKs are in `example/android/app/build/outputs/apk/debug/` and
-`example/android/app/build/outputs/apk/release/`.
+The npm registry lists `react-native-frame-metrics@0.0.1`, maintained by
+`aayush.bharadva`; 0.1.0 is not published.
 
 ## Automated gates
 
@@ -45,60 +42,60 @@ yarn typecheck
 yarn test --runInBand --coverage
 yarn build
 npm pack --dry-run
-npm pack
 ```
 
-CI is configured to build the Android and iOS examples. Require green CI on the
-exact commit being released. Unit tests cover JS cadence at 60/90/120 Hz, stalls, lifecycle,
-subscription cleanup, invalid intervals, failures, and stale asynchronous results.
-They do not substitute for native compilation or device measurements.
+Native accounting tests (JVM, no device):
 
-On Windows, use `node .yarn/releases/yarn-4.11.0.cjs` in place of `yarn` if Corepack
-is unavailable; do not change global tooling just for this project. With JDK 17 and
-the Android SDK configured, run these from the repository root:
+```sh
+cd example/android
+./gradlew :react-native-frame-metrics:testReleaseUnitTest
+```
+
+On Windows, use `node .yarn/releases/yarn-4.11.0.cjs` in place of `yarn` if Corepack is
+unavailable, and quote comma-separated Gradle properties in PowerShell:
 
 ```powershell
-$env:GRADLE_USER_HOME = Join-Path (Get-Location) '.gradle'
 Push-Location example/android
-.\gradlew.bat :app:assembleDebug :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --console=plain
+.\gradlew.bat :app:assembleRelease '-PreactNativeArchitectures=arm64-v8a,x86_64' --console=plain
 Pop-Location
 ```
 
-This checks the arm64 variant; it does not verify every ABI or run the app. The
-example Release APK uses the example debug key and is only for local validation.
+The example release APK is signed with the example debug key and is only for local
+validation.
 
-## Native and consumer gates
+## Device gates
 
-- Build and run the example on physical Android and iOS devices; record the matrix
-  and before/after results in `example/README.md`.
-- Verify background/resume, stop/restart, reload, a JS stall, and a native UI stall.
-- Check a high-refresh device and refresh changes. On iPhone verify the host
-  `CADisableMinimumFrameDurationOnPhone` setting.
-- Install the packed `.tgz` into a clean New Architecture app, run pods, and compile
-  Android and iOS. Verify package exports, native autolinking, and TypeScript imports.
-- Verify the intended lower bound, RN 0.76, on both platforms. If that cannot be
-  supported, raise the peer dependency and README together before release.
-- In Release, verify the overlay is absent and imperative sampling still works.
+- **Android:** install a release build of the example on a physical device and run
+  `node example/scripts/android-validation.mjs --serial <id> --apk <apk>`. All checks
+  must pass; record the table in `example/README.md`. Prefer a high-refresh or
+  adaptive-refresh device, and repeat the stall phases at least three times.
+- **iOS:** build and run the example on an iPhone in Release. Tap **Block JS 250 ms**
+  and confirm JS stall rises with no UI stall, confirm background/resume reports no
+  stall, and check a ProMotion device at 120 Hz with
+  `CADisableMinimumFrameDurationOnPhone` set. There is no Block UI button on iOS; use a
+  temporary main-thread `usleep` or Instruments to confirm UI stalls are not reported
+  as JS stalls. Record the results in `example/README.md`.
+- **Consumer app:** install the packed `.tgz` into a clean New Architecture app at the
+  lowest supported React Native version (0.76), build Android and iOS in Release, and
+  confirm samples arrive. If a platform fails, raise the peer dependency and the README
+  together before releasing.
+- In Release, confirm the overlay is absent and `subscribe` still delivers samples.
 
 ## Publish (maintainer action)
 
-Before any commit, obtain the maintainer's approval and confirm the personal Git
-name and email with `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`.
-If a work identity is active, configure a repository-local personal identity only
-after confirmation; do not change global Git settings. Confirm the personal npm
-account separately with `npm whoami`; Git author identity does not select npm or
-GitHub credentials.
+Before committing or tagging, confirm the Git identity with `git var GIT_AUTHOR_IDENT`.
+Confirm the npm account separately with `npm whoami`; Git identity does not select npm
+or GitHub credentials. Confirm the account can publish `react-native-frame-metrics`.
 
-Confirm the maintainer owns the existing npm package and the personal npm account
-has publish permission. Review the tarball contents and version. After all gates pass:
+After every gate passes on the release commit and CI is green:
 
 ```sh
-npm login
-npm whoami
+npm pack
 npm publish ./react-native-frame-metrics-0.1.0.tgz --access public
+git tag 0.1.0
+git push origin 0.1.0
 ```
 
-Publish only the reviewed tarball from the approved release commit. Preparing this
-checkout does not publish it. Create a matching `0.1.0` Git tag/release (the podspec
-expects an unprefixed tag), and include the changelog and verified compatibility
-matrix. Do not check npm tokens into this repository.
+Publish only the reviewed tarball from the release commit. The podspec expects an
+unprefixed tag (`0.1.0`). Include the changelog and the verified device matrix in the
+GitHub release. Never commit npm tokens.
